@@ -1,0 +1,364 @@
+WRITE "!====================================!"
+WRITE "!                                    !"
+WRITE "!  Data structures, subroutines and  !"
+WRITE "!            definitions             !"
+WRITE "!                                    !"
+WRITE "!====================================!"
+WRITE "! "
+WRITE "! to cite this software:              "
+WRITE "! "
+WRITE "! G. Haller, S. Katsanoulis, M. Holzner, " 
+WRITE "! B. Frohnapfel and D. Gatti, Objective  "
+WRITE "! material barriers to the transport of  " 
+WRITE "! momentum and vorticity. submitted (2020)"
+WRITE "! "
+
+USE fft
+USE rbmat
+USE parallel
+USE wallclock
+!USE rtchecks
+
+! Definitions
+! ------------------------------------------------------------------------------
+ODE==RK4
+!#define vorticity
+
+! Chron
+! ------------------------------------------------------------------------------
+REAL clock
+
+! Parallel  (distributed memory - could actually use MPI as well!)  !TODO implement distributed memory
+! ------------------------------------------------------------------------------
+INTEGER iproc,nproc
+IF COMMANDLINE.HI<1 THEN iproc=1; nproc=1 ELSE
+iproc=atoi(COMMANDLINE(1)); nproc=atoi(COMMANDLINE(2)); END IF
+bufsize=800; baseport=IPPORT_USERRESERVED+111
+FILE prev,next
+IF iproc<nproc THEN
+  next=fdopen(tcpserver(baseport+iproc),"r+")
+  setvbuf(next,malloc(bufsize),_IOFBF,bufsize)
+END IF
+IF iproc>1 THEN
+  prev=fdopen(tcpclient(COMMANDLINE(3),baseport+iproc-1),"r+")
+  setvbuf(prev,malloc(bufsize),_IOFBF,bufsize)
+END IF
+first==(prev=NULL FILE); last==(next=NULL FILE); has_terminal==last
+
+! Parallel (shared memory)
+! ------------------------------------------------------------------------------
+INTEGER nsmp = 64
+
+! Types
+! ------------------------------------------------------------------------------
+REALVEL = STRUCTURED ARRAY(u,v,w) OF REAL
+REALAVF = STRUCTURED ARRAY(fx,fy,fz) OF REAL
+INLINE FUNCTION imod(INTEGER i)=(i)MOD(2)
+
+! Read input files and set parameters
+! ------------------------------------------------------------------------------
+INTEGER ny,nx,nz,ox,oy,oz,ofx,ofy,ofz
+REAL alfa0, beta0, a, ymin, ymax, ni, deltat, deltas, smax
+INTEGER nfmin, nfmax, dn_save
+STRING path
+SUBROUTINE read_initial_data
+ FILE in_data=OPEN("ftle.in")
+ READ BY NAME FROM in_data ny,nx,nz,ox,oy,oz,ofx,ofy,ofz,alfa0,beta0,ymin,ymax,a,ni, deltat, deltas, smax; ni=1/ni
+#ifndef dummy
+ ofx=1; ofy=1; ofz=1
+#endif
+ READ BY NAME FROM in_data nfmin,nfmax,dn_save
+ READ BY NAME FROM in_data path
+ CLOSE in_data
+ IF has_terminal THEN
+   WRITE BY NAME nproc,nsmp
+   WRITE BY NAME nx, nz, ny
+   WRITE BY NAME ox, oy, oz
+   WRITE BY NAME ofx, ofy, ofz
+   WRITE BY NAME ymin, ymax, a, alfa0, beta0, 1/ni
+   WRITE BY NAME deltat, deltas, smax
+ END IF
+END read_initial_data
+read_initial_data
+dir=SIGN(nfmax-nfmin)
+IF dir>0 THEN IF has_terminal THEN WRITE "Forward aFTLE"
+IF dir<0 THEN IF has_terminal THEN WRITE "Backward aFTLE"
+
+! Define grids
+! ------------------------------------------------------------------------------
+INTEGER nxd=3*nx DIV 2 - 1; DO INC nxd UNTIL FFTfit(nxd)
+INTEGER nzd=3*nz - 1; DO INC nzd UNTIL FFTfit(nzd)
+#ifdef dummy
+nxd=~*ox; nzd=~*oz; ny=~*oy
+#endif
+nyl=1+(iproc-1)*(ny-1) DIV nproc; nyh=iproc*(ny-1) DIV nproc
+REAL y(-1..ny+1); DO y(i)=ymin+0.5*(ymax-ymin)*[tanh(a*(2*i/ny-1))/tanh(a)+0.5*(ymax-ymin)] FOR ALL i !Channel
+
+
+! Define velocity fields
+! ------------------------------------------------------------------------------
+STRING fieldname 
+SHARED ARRAY(0..2*nxd-1, 0..nzd-1, -1..ny+1, 0..2) OF REALVEL velocity=0
+#ifndef dummy
+SHARED ARRAY(0..2*nxd-1, 0..nzd-1, -1..ny+1, 0..2) OF REALAVF active=0
+#endif
+
+! Module for operating with velocity fields
+! ------------------------------------------------------------------------------
+USE channelInterface
+
+! ODE Library
+! ------------------------------------------------------------------------------
+REAL newcoef, oldcoef, lambda
+ARRAY(1..4,1..4) OF REAL RK4
+RK4(1,1)=1020/240; RK4(1,2)=2.0;    RK4(1,3)=0;       RK4(1,4)=0
+RK4(2,1)=1020/32;  RK4(2,2)=289/32; RK4(2,3)=-225/32; RK4(2,4)=2.*240/1020
+RK4(3,1)=1020/68;  RK4(3,2)=25/4;   RK4(3,3)=-17/4;   RK4(3,4)=2.*(240+32)/1020
+RK4(4,1)=1020/170; RK4(4,2)=9/2;   RK4(4,3)=-5/2;     RK4(4,4)=2.*(240+32+68)/1020
+
+SUBROUTINE timescheme(COMPLEX rhs^,old^(*),unkn,impl,expl; INTEGER it)
+  rhs=ODE(it,1)/deltat*unkn+impl+ODE(it,2)*expl+ODE(it,3)*old(1)
+  old(1)=expl
+END timescheme
+
+SUBROUTINE set_ODE_step(INTEGER it)
+  COMPLEX coef1, coef2, coeft
+  lambda=ODE(it,4)
+  ARRAY(1..2) OF COMPLEX vc1=0, vc2=0; vc2(1)=1
+  timescheme(coeft,vc1,1,0,0,it); timescheme(coef2,vc2,0,0,0,it); timescheme(coef1,vc1,0,0,1,it)
+  newcoef=coef1.REAL/coeft.REAL/deltat; oldcoef=coef2.REAL/coeft.REAL/deltat
+END set_ODE_step
+
+! Velocity field interpolators
+! ------------------------------------------------------------------------------
+SUBROUTINE linearInterpolator(ARRAY(*,*,*,*) OF REAL Vi, Ve; POINTER TO ARRAY(*,*,*,*) OF REAL Vo)
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR ix=ismp*(2*nxd) DIV nsmp TO (ismp+1)*(2*nxd) DIV nsmp -1
+       DO Vo(ix,iz,iy,i) = [ Vi(ix,iz,iy,i)*(1-lambda) + Ve(ix,iz,iy,i)*lambda ]*dir FOR ALL iz,iy,i
+    REPEAT
+  REPEAT
+END linearInterpolator
+
+! Particle tracks: definitions
+! ------------------------------------------------------------------------------
+PARTICLE = STRUCTURED ARRAY(xp,yp,zp,xxp,yyp,zzp,up,vp,wp) OF REAL
+EXTPARTICLE = STRUCTURED ARRAY(xp,yp,zp,up,vp,wp,fxp,fyp,fzp) OF REAL  
+#ifdef slices
+ARRAY(0..0) OF REAL xx=0; xx(0)=PI/alfa0
+nx_part=xx.LENGTH
+dx_part=2*PI/(alfa0*nx_part)
+#else
+nx_part=2*nxd*ox*ofx;
+REAL dx_part=2*PI/(alfa0*nx_part)
+ARRAY(0..nx_part-1) OF REAL xx=0; DO xx(ix)=ix*dx_part FOR ALL ix
+#endif
+nz_part=nzd*oz*ofz; 
+REAL dz_part=2*PI/(beta0*nz_part)
+ARRAY(0..nz_part-1) OF REAL zz=0; DO zz(iz)=iz*dz_part FOR ALL iz
+ny_part=ny*oy*ofy;
+REAL yy(-1..ny_part+1)
+DO yy(i)=ymin+0.5*(ymax-ymin)*[tanh(a*(2*i/ny_part-1))/tanh(a)+0.5*(ymax-ymin)] FOR ALL i
+INTEGER np = 6*nx_part*nz_part*(ny_part-1)
+INTEGER extnp = nx_part*nz_part*(ny_part-1)
+IF has_terminal THEN 
+  WRITE "Seeding particles in the barrier field ..."
+  ssize_t diskspace; diskspace=SIZEOF(ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE)
+#ifndef dummy
+                     diskspace=~+SIZEOF(ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1) OF EXTPARTICLE)
+#endif                               
+  WRITE " ","this will require " diskspace/(1024.0**3) " GiB of memory ..."
+END IF
+! Particles that I need for the inverse of the flow map at the barrier field position
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE particles=0
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF BOOLEAN hitBoundary=0
+!#ifndef dummy
+! Particles that I need for the barrier field and the gradient of its dummy flowmap
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1) OF EXTPARTICLE extparticles=0
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1) OF BOOLEAN exthitBoundary=0
+!#endif
+POINTER TO STORED STRUCTURE(
+  ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE particlesimage
+  ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1) OF EXTPARTICLE extparticlesimage
+  ) diskparticles
+INTEGER iytr
+ARRAY(1..6) OF REAL Wx, Wz, Wxp, Wzp; ARRAY(0..5) OF REAL Wy, Wyp; ARRAY(1..6) OF INTEGER ixv, izv
+INTEGER ordy, ixp, iyp, izp; REAL vpoldu,vpoldv,vpoldw
+REAL dx=PI/(alfa0*nxd), dz=2*PI/(beta0*nzd)
+Wx(1)=1/(-120*dx^5);Wx(2)=1/(24*dx^5);Wx(3)=1/(-12*dx^5);Wx(4)=1/(12*dx^5);Wx(5)=1/(-24*dx^5);Wx(6)=1/(120*dx^5)
+Wz(1)=1/(-120*dz^5);Wz(2)=1/(24*dz^5);Wz(3)=1/(-12*dz^5);Wz(4)=1/(12*dz^5);Wz(5)=1/(-24*dz^5);Wz(6)=1/(120*dz^5)
+DO Wy(j)=1 FOR ALL j
+epsx=MIN[dx,dx_part]/200;    epsy=[y(1)-y(0)]/200;    epsz=MIN[dz,dz_part]/200;
+ARRAY(0..5,0..2) OF REAL eps
+eps(0,0) = epsx;   eps(0,1) = 0.0;   eps(0,2) = 0.0;
+eps(1,0) = -epsx;  eps(1,1) = 0.0;   eps(1,2) = 0.0;
+eps(2,0) = 0.0;    eps(2,1) = epsy;  eps(2,2) = 0.0;
+eps(3,0) = 0.0;    eps(3,1) = -epsy; eps(3,2) = 0.0;
+eps(4,0) = 0.0;    eps(4,1) = 0.0;   eps(4,2) = epsz;
+eps(5,0) = 0.0;    eps(5,1) = 0.0;   eps(5,2) = -epsz;
+LOOP FOR ix=0 TO nx_part-1 AND iz=0 TO nz_part-1 AND iy=1 TO ny_part-1 
+!#ifndef dummy
+  WITH extparticles(ix,iz,iy):  xp = xx(ix); yp = yy(iy); zp = zz(iz)
+!#endif
+  DO WITH particles(ix,iz,iy,i):
+    xp = xx(ix)+eps(i,0); xxp=xp;
+    yp = yy(iy)+eps(i,1); yyp=yp;
+    zp = zz(iz)+eps(i,2); zzp=zp;
+  FOR i=0 TO 5
+REPEAT LOOP 
+
+! Definition of the barrier field 
+! ------------------------------------------------------------------------------
+#ifdef dummy
+SHARED ARRAY(0..2*nxd-1, 0..nzd-1,-1..ny+1) OF REALVEL barrierField=0
+SHARED ARRAY(0..2*nxd-1, 0..nzd-1,-1..ny+1) OF REALVEL barrierFieldIntegrand=0
+POINTER TO STORED ARRAY(0..2*nxd-1, 0..nzd-1,-1..ny+1) OF REALVEL diskBarrierField
+#else
+SHARED ARRAY(0..nx_part-1, 0..nz_part-1, -1..ny_part+1) OF REALVEL barrierField=0
+SHARED ARRAY(0..nx_part-1, 0..nz_part-1, -1..ny_part+1) OF REALVEL barrierFieldIntegrand=0
+POINTER TO STORED ARRAY(0..nx_part-1, 0..nz_part-1, -1..ny_part+1) OF REALVEL diskBarrierField
+#endif
+
+! Particle tracks: integration (velocity flowmap only)
+! ------------------------------------------------------------------------------
+SUBROUTINE advance_trajectories(ARRAY(*,*,*) OF REALVEL V)
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR iii=ismp TO np-1 BY nsmp WITH particles(****)(iii):
+     IF NOT hitBoundary(****)(iii) THEN
+       iyp = 0;DO INC iyp UNTIL (y(iyp)>yp); iyp =~-3; ixp= FLOOR(xp/dx)-3; izp = FLOOR(zp/dz)-3
+       DO ixv(i) = (ixp+i)MOD(2*nxd); izv(i) = (izp+i)MOD(nzd) FOR ALL i
+       Wxp=Wx; Wzp=Wz; Wyp=Wy
+       LOOP FOR j=1 TO 6 AND i=1 TO 6 EXCEPT j=i; Wxp(j)=~*(xp -(ixp+i)*dx); Wzp(j) =~*(zp-(izp+i)*dz); REPEAT LOOP
+       IF (iyp=-2 OR iyp=ny-3) THEN ordy=3; iyp=~+1 ELSE  ordy=5  END IF
+       LOOP FOR j=0 TO ordy AND i=0 TO ordy EXCEPT i=j; Wyp(j)=~*(yp - y(iyp+i))/(y(iyp+j)-y(iyp+i)); REPEAT LOOP
+       vpoldu=up; vpoldv=vp; vpoldw=wp; up=0; vp=0; wp=0
+       LOOP FOR j = 0 TO ordy AND ix=1 TO 6 AND iz=1 TO 6
+         up=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).u*Wzp(iz)*Wxp(ix)
+         vp=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).v*Wzp(iz)*Wxp(ix)
+         wp=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).w*Wzp(iz)*Wxp(ix)
+       REPEAT LOOP
+       vpoldu=~*oldcoef+newcoef*up; vpoldv=~*oldcoef+newcoef*vp; vpoldw=~*oldcoef+newcoef*wp;
+       xp =~+deltat*vpoldu; xxp=~+deltat*vpoldu; IF xp>2*nxd*dx THEN xp=~-2*nxd*dx ELSE IF xp<0 THEN xp=~+2*nxd*dx END IF
+       yp =~+deltat*vpoldv; yyp=~+deltat*vpoldv
+       IF yp<yy(1) OR yp>yy(ny_part-1) THEN hitBoundary(****)(iii)=YES
+       zp =~+deltat*vpoldw; zzp=~+deltat*vpoldw; IF zp>nzd*dz THEN zp=~-nzd*dz ELSE IF zp<0 THEN zp=~+nzd*dz END IF
+     END IF
+    REPEAT
+  REPEAT
+END advance_trajectories
+
+
+! Particle tracks: integration (velocity flowmap and barrier field)
+! ------------------------------------------------------------------------------
+SUBROUTINE advance_trajectories(ARRAY(*,*,*) OF REALVEL V; ARRAY(*,*,*) OF REALAVF F)
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR iii=ismp TO extnp-1 BY nsmp WITH extparticles(***)(iii):
+     IF NOT exthitBoundary(***)(iii) THEN
+       iyp = 0;DO INC iyp UNTIL (y(iyp)>yp); iyp =~-3; ixp= FLOOR(xp/dx)-3; izp = FLOOR(zp/dz)-3
+       DO ixv(i) = (ixp+i)MOD(2*nxd); izv(i) = (izp+i)MOD(nzd) FOR ALL i
+       Wxp=Wx; Wzp=Wz; Wyp=Wy
+       LOOP FOR j=1 TO 6 AND i=1 TO 6 EXCEPT j=i; Wxp(j)=~*(xp -(ixp+i)*dx); Wzp(j) =~*(zp-(izp+i)*dz); REPEAT LOOP
+       IF (iyp=-2 OR iyp=ny-3) THEN ordy=3; iyp=~+1 ELSE  ordy=5  END IF
+       LOOP FOR j=0 TO ordy AND i=0 TO ordy EXCEPT i=j; Wyp(j)=~*(yp - y(iyp+i))/(y(iyp+j)-y(iyp+i)); REPEAT LOOP
+       vpoldu=up; vpoldv=vp; vpoldw=wp; up=0; vp=0; wp=0; fxp=0; fyp=0 fzp=0
+       LOOP FOR j = 0 TO ordy AND ix=1 TO 6 AND iz=1 TO 6
+         up=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).u*Wzp(iz)*Wxp(ix)
+         vp=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).v*Wzp(iz)*Wxp(ix)
+         wp=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).w*Wzp(iz)*Wxp(ix)
+         fxp=~+Wyp(j)*F(ixv(ix),izv(iz),iyp+j).fx*Wzp(iz)*Wxp(ix)
+         fyp=~+Wyp(j)*F(ixv(ix),izv(iz),iyp+j).fy*Wzp(iz)*Wxp(ix)
+         fzp=~+Wyp(j)*F(ixv(ix),izv(iz),iyp+j).fz*Wzp(iz)*Wxp(ix)
+       REPEAT LOOP
+       vpoldu=~*oldcoef+newcoef*up; vpoldv=~*oldcoef+newcoef*vp; vpoldw=~*oldcoef+newcoef*wp;
+       xp =~+deltat*vpoldu; IF xp>2*nxd*dx THEN xp=~-2*nxd*dx ELSE IF xp<0 THEN xp=~+2*nxd*dx END IF
+       yp =~+deltat*vpoldv; 
+       zp =~+deltat*vpoldw; IF zp>nzd*dz THEN zp=~-nzd*dz ELSE IF zp<0 THEN zp=~+nzd*dz END IF
+     END IF
+    REPEAT
+  REPEAT
+END advance_trajectories
+
+! Compute barrier field
+! ------------------------------------------------------------------------------
+SUBROUTINE compute_barrier_field()
+  chron=wallclock(); IF has_terminal THEN WRITE "Average barrier field..."
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    !LOOP FOR iii=ismp TO extnp-1 BY nsmp WITH extparticles(***)(iii):
+    !LOOP FOR iii=ismp*(extnp) DIV nsmp TO (ismp+1)*(extnp) DIV nsmp -1 WITH extparticles(***)(iii):
+    LOOP FOR ix=ismp*(nx_part) DIV nsmp TO (ismp+1)*(nx_part) DIV nsmp -1 AND iz=0 TO nz_part-1 AND iy=1 TO ny_part-1 
+      ! Compute the gradient of the flow map for every point at which we have active vector field
+      ARRAY(0..2,0..2) OF REAL gradFlowMap=0
+      ARRAY(0..2) OF REAL avf=0,bf=0
+      WITH extparticles(ix,iz,iy):
+       avf(0) = fxp; avf(1) = fyp; avf(2) = fzp
+      WITH particles(ix,iz,iy,*):
+       gradFlowMap(0,0) = [xxp(0) - xxp(1)]/(2*epsx)
+       gradFlowMap(0,1) = [xxp(2) - xxp(3)]/(2*epsy)
+       gradFlowMap(0,2) = [xxp(4) - xxp(5)]/(2*epsz)
+       gradFlowMap(1,0) = [yyp(0) - yyp(1)]/(2*epsx)
+       gradFlowMap(1,1) = [yyp(2) - yyp(3)]/(2*epsy)
+       gradFlowMap(1,2) = [yyp(4) - yyp(5)]/(2*epsz)
+       gradFlowMap(2,0) = [zzp(0) - zzp(1)]/(2*epsx)
+       gradFlowMap(2,1) = [zzp(2) - zzp(3)]/(2*epsy)
+       gradFlowMap(2,2) = [zzp(4) - zzp(5)]/(2*epsz)
+      LUdecomp gradFlowMap
+      bf=gradFlowMap\avf
+      WITH barrierField(ix,iz,iy):
+       !u = ~ + bf(0); v = ~ + bf(1); w = ~ + bf(2)
+       u = ~ + deltat*[bf(0)*newcoef + barrierFieldIntegrand(ix,iz,iy).u*oldcoef]
+       v = ~ + deltat*[bf(1)*newcoef + barrierFieldIntegrand(ix,iz,iy).v*oldcoef]
+       w = ~ + deltat*[bf(2)*newcoef + barrierFieldIntegrand(ix,iz,iy).w*oldcoef]
+      WITH barrierFieldIntegrand(ix,iz,iy):
+       u = bf(0); v = bf(1); w = bf(2)
+    REPEAT
+  REPEAT
+  IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+END compute_barrier_field
+
+! Save Flowmap XXX TODO Make flowmap a structure which contains all information for the gradient
+! ------------------------------------------------------------------------------
+SUBROUTINE save_flowmap(INTEGER nF)
+  STRING filename=WRITE("particles."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Saving flowmap: "filename
+  diskparticles=CREATE(filename)
+  WITH diskparticles:
+    particlesimage(*,*,*,*,*)=particles(*,*,*,*,*)
+    extparticlesimage(*,*,*,*)=extparticles(*,*,*,*)
+  CLOSE diskparticles
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END save_flowmap
+
+! Load Flowmap XXX TODO Make flowmap a structure which contains all information for the gradient
+! ------------------------------------------------------------------------------
+SUBROUTINE load_flowmap(INTEGER nF)
+  STRING filename=WRITE("particles."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Loading flowmap: "filename
+  diskparticles=OPENRO(filename)
+  WITH diskparticles:
+    particles(*,*,*,*,*)=particlesimage(*,*,*,*,*)
+    extparticles(*,*,*,*)=extparticlesimage(*,*,*,*)
+  CLOSE diskparticles
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END load_flowmap
+
+! Save barrier field XXX TODO Make structure which contains all information for the gradient
+! ------------------------------------------------------------------------------
+SUBROUTINE save_barrierField(INTEGER nF)
+  STRING filename=WRITE("barrierField."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Saving barrierField: "filename
+  diskBarrierField=CREATE(filename)
+  diskBarrierField(*,*,*)=barrierField(*,*,*)
+  CLOSE diskBarrierField
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END save_barrierField
+
+! Load barrier field XXX TODO Make structure which contains all information for the gradient
+! ------------------------------------------------------------------------------
+SUBROUTINE load_barrierField(INTEGER nF)
+  STRING filename=WRITE("barrierField."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Loading barrierField: "filename
+  diskBarrierField=OPENRO(filename)
+  barrierField(*,*,*)=diskBarrierField(*,*,*)
+  CLOSE diskBarrierField
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END load_barrierField
+

@@ -1,0 +1,111 @@
+#define slices
+#define dummy
+WRITE "!====================================!"
+WRITE "!                                    !"
+WRITE "!        dummy flowmap of the        !"
+WRITE "!        active barrier Field        !"
+WRITE "!                                    !"
+WRITE "!====================================!"
+WRITE "! "
+WRITE "! This program computes the dummy flowmap    " 
+WRITE "! of the active barrier vector field         "
+WRITE "! and aFTLE/aPRA diagnostics                 " 
+WRITE "! "
+WRITE "! to cite this software:              "
+WRITE "! "
+WRITE "! G. Haller, S. Katsanoulis, M. Holzner, " 
+WRITE "! B. Frohnapfel and D. Gatti, Objective  "
+WRITE "! material barriers to the transport of  " 
+WRITE "! momentum and vorticity. submitted (2020)"
+WRITE "! "
+
+!USE rtchecks
+USE ftledata
+USE ./lapacksvd
+
+! Read the field number
+INTEGER iF = atoi(COMMANDLINE(4))
+
+! Try to read the dummy flowmap 
+STRING dummyFlowMapFileName = WRITE("dummyFlowMap."iF".bin")
+FILE dummyFlowMapFile = OPENRO(dummyFlowMapFileName)
+IF dummyFlowMapFile#NULL THEN
+  REAL chron=wallclock(); IF has_terminal THEN WRITE "Reading the dummy flowmap..."
+  READ BINARY FROM dummyFlowMapFile particles
+  CLOSE dummyFlowMapFile
+  IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+
+ELSE
+
+! Read the flowmap
+INTEGER iF = atoi(COMMANDLINE(4))
+load_barrierField(iF)
+DO barrierField(****)(i) = ~/(iF*deltat) FOR ALL i
+
+! The timestep is actually the dummy timestep
+deltat = deltas
+
+! Integrate the dummy flowmap 
+IF has_terminal THEN WRITE "Computing dummy flowmap..."
+REAL dummyTime=0
+ LOOP forward WHILE dummyTime < smax
+    REAL chron=wallclock(); IF has_terminal THEN WRITE " ","advances trajectories at time "dummyTime" of "smax" ..."
+    LOOP FOR it=1 TO ODE(*,1).LENGTH
+      dummyTime=~+2/ODE(it,1)*deltat
+      set_ODE_step(INTEGER it)
+      advance_trajectories(barrierField(*,*,*))
+    REPEAT
+    IF has_terminal THEN WRITE " ", "advection took "wallclock()-chron" seconds"
+ REPEAT forward
+
+! Save the flowmap 
+REAL chron=wallclock(); IF has_terminal THEN WRITE "Saving the dummy flowmap..."
+STRING dummyFlowMapFileName = WRITE("dummyFlowMap."iF".bin")
+FILE dummyFlowMapFile = CREATE(dummyFlowMapFileName)
+WRITE BINARY TO dummyFlowMapFile particles
+CLOSE dummyFlowMapFile
+IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+
+END IF
+
+! Compute the gradient of the flowmap, FTLE and PRA
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1) OF REAL FTLE, PRA
+REAL chron=wallclock(); IF has_terminal THEN WRITE "Computing FTLEs..."
+PARALLEL LOOP FOR ismp=0 TO nsmp-1
+   LOOP FOR iii=ismp TO np DIV 6-1 BY nsmp WITH particles(***,*)(iii,*):
+       ! Compute the flowmap gradient
+       ARRAY(0..2,0..2) OF REAL gradFlowMap, C
+       gradFlowMap(0,0) = [xxp(0) - xxp(1)]/(2*epsx)
+       gradFlowMap(0,1) = [xxp(2) - xxp(3)]/(2*epsy)
+       gradFlowMap(0,2) = [xxp(4) - xxp(5)]/(2*epsz)
+       gradFlowMap(1,0) = [yyp(0) - yyp(1)]/(2*epsx)
+       gradFlowMap(1,1) = [yyp(2) - yyp(3)]/(2*epsy)
+       gradFlowMap(1,2) = [yyp(4) - yyp(5)]/(2*epsz)
+       gradFlowMap(2,0) = [zzp(0) - zzp(1)]/(2*epsx)
+       gradFlowMap(2,1) = [zzp(2) - zzp(3)]/(2*epsy)
+       gradFlowMap(2,2) = [zzp(4) - zzp(5)]/(2*epsz)
+       ! Compute FTLE
+       ARRAY(0..2) OF REAL sigma
+       svd(gradFlowMap(*,*),sigma)
+       FTLE(***)(iii)=sigma(0)^2
+       ! Compute PRA
+       ARRAY(0..2,0..2) OF REAL L,R; sigma=0
+       svdv(gradFlowMap(*,*),sigma,L,R)
+       PRA(***)(iii)=0.5*{[SUM (SUM L(i,j)*R(j,i) FOR ALL j) FOR ALL i]-1}
+   REPEAT
+REPEAT
+IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+
+! Saving results
+FILE ftlefile=CREATE("FTLE."iF".bin")
+REAL chron=wallclock();  IF has_terminal THEN WRITE "Saving FTLEs..."
+WRITE BINARY TO ftlefile FTLE
+CLOSE ftlefile
+IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+
+FILE prafile=CREATE("PRA."iF".bin")
+REAL chron=wallclock();  IF has_terminal THEN WRITE "Saving PRAs..."
+WRITE BINARY TO prafile PRA
+CLOSE prafile
+IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+

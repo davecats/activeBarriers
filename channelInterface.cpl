@@ -1,0 +1,210 @@
+! this module should provide only an interaface to a subroutine that can read
+! flow snapshots and return the velocity field in physical space 
+SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
+
+MODULE channelInterface
+
+STRUCTURE[ARRAY(-2..2) OF REAL d0,d1,d2,d4] derivatives(1..ny-1)
+ARRAY(-2..2) OF REAL d040,d140,d240,d340,d14m1,d24m1, d04n,d14n,d24n,d14np1,d24np1
+
+MODULE setup_derivatives
+REAL M(0..4,0..4),t(0..4)
+LOOP FOR iy=1 TO ny-1 WITH derivatives(iy)
+  DO M(i,j)=(y(iy-2+j)-y(iy))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+  t=0; t(0)=24
+  d4(-2+(*))=M\t
+  DO M(i,j)=(5-i)*(6-i)*(7-i)*(8-i)*(y(iy-2+j)-y(iy))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+  DO t(i)=SUM {d4(j)*(y(iy+j)-y(iy))**(8-i)} FOR j=-2 TO 2 FOR i=0 TO 4
+  d0(-2+(*))=M\t
+  DO M(i,j)=(y(iy-2+j)-y(iy))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+  t=0; DO t(i)=SUM d0(j)*(4-i)*(3-i)*(y(iy+j)-y(iy))**(2-i) FOR j=-2 TO 2 FOR i=0 TO 2
+  d2(-2+(*))=M\t
+  t=0; DO t(i)=SUM d0(j)*(4-i)*(y(iy+j)-y(iy))**(3-i) FOR j=-2 TO 2 FOR i=0 TO 3
+  d1(-2+(*))=M\t
+REPEAT
+d040=0; d040(-1)=1
+DO M(i,j)=(y(-1+j)-y(0))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+t=0; t(3)=1
+d140(-2+(*))=M\t
+t=0; t(2)=2
+d240(-2+(*))=M\t
+t=0; t(3)=6
+d340(-2+(*))=M\t
+DO M(i,j)=(y(-1+j)-y(-1))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+t=0; t(3)=1
+d14m1(-2+(*))=M\t
+t=0; t(2)=2
+d24m1(-2+(*))=M\t
+d04n=0; d04n(1)=1
+DO M(i,j)=(y(ny-3+j)-y(ny))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+t=0; t(3)=1
+d14n(-2+(*))=M\t
+t=0; t(2)=2
+d24n(-2+(*))=M\t
+DO M(i,j)=(y(ny-3+j)-y(ny+1))**(4-i) FOR i=0 TO 4 AND j=0 TO 4; LUdecomp M
+t=0; t(3)=1
+d14np1(-2+(*))=M\t
+t=0; t(2)=2
+d24np1(-2+(*))=M\t
+END setup_derivatives
+
+ARRAY(1..ny-1,-2..2) OF REAL D0mat
+D0mat(1..ny-1)=derivatives.d0; LUdecomp D0mat
+
+VETA=STRUCTURE(COMPLEX v,eta)
+VELOCITY=STRUCTURE(COMPLEX u,v,w)
+
+POINTER TO STORED STRUCTURE(
+  INTEGER nyimage,nximage,nzimage
+  REAL timage,yminimage,ymaximage,aimage,alfa0image,beta0image,niimage
+  ARRAY(-1..ny+1) OF REAL uavimage,wavimage
+  ARRAY(-1..ny+1,0..nx,-nz..nz) OF VETA fieldimage
+  ) diskfield
+
+SUBROUTINE deriv2(ARRAY(*) OF REAL f0,f2^)
+INLINE REAL FUNCTION D2(REAL f(*)) = d2(-2)*f(-2)+d2(-1)*f(-1)+d2(0)*f(0)+d2(1)*f(1)+d2(2)*f(2)
+INLINE COMPLEX FUNCTION D2(COMPLEX f(*)) = D2(f.REAL)+I*D2(f.IMAG)
+f2(0)=SUM d240(i)*f0(1+i) FOR i=-2 TO 2
+f2(-1)=SUM d24m1(i)*f0(1+i) FOR i=-2 TO 2
+f2(ny)=SUM d24n(i)*f0(ny-1+i) FOR i=-2 TO 2
+f2(ny+1)=SUM d24np1(i)*f0(ny-1+i) FOR i=-2 TO 2
+DO WITH derivatives(i) f2(i)=D2(f0(i+(*))) FOR i=1 TO ny-1
+WITH derivatives(1): f2(1)=~-(d0(-1)*f2(0)+d0(-2)*f2(-1))
+WITH derivatives(2): f2(2)=~-d0(-2)*f2(0)
+WITH derivatives(ny-1): f2(ny-1)=~-(d0(1)*f2(ny)+d0(2)*f2(ny+1))
+WITH derivatives(ny-2): f2(ny-2)=~-d0(2)*f2(ny)
+LeftLUDiv(f2(1..ny-1),D0mat,f2(1..ny-1))
+END deriv2
+
+SUBROUTINE deriv(ARRAY(*) OF REAL f0,f1^)
+INLINE REAL FUNCTION D1(REAL f(*)) = d1(-2)*f(-2)+d1(-1)*f(-1)+d1(0)*f(0)+d1(1)*f(1)+d1(2)*f(2)
+INLINE COMPLEX FUNCTION D1(COMPLEX f(*)) = D1(f.REAL)+I*D1(f.IMAG)
+f1(0)=SUM d140(i)*f0(1+i) FOR i=-2 TO 2
+f1(-1)=SUM d14m1(i)*f0(1+i) FOR i=-2 TO 2
+f1(ny)=SUM d14n(i)*f0(ny-1+i) FOR i=-2 TO 2
+f1(ny+1)=SUM d14np1(i)*f0(ny-1+i) FOR i=-2 TO 2
+DO WITH derivatives(i) f1(i)=D1(f0(i+(*))) FOR i=1 TO ny-1
+WITH derivatives(1): f1(1)=~-(d0(-1)*f1(0)+d0(-2)*f1(-1))
+WITH derivatives(2): f1(2)=~-d0(-2)*f1(0)
+WITH derivatives(ny-1): f1(ny-1)=~-(d0(1)*f1(ny)+d0(2)*f1(ny+1))
+WITH derivatives(ny-2): f1(ny-2)=~-d0(2)*f1(ny)
+LeftLUDiv(f1(1..ny-1),D0mat,f1(1..ny-1))
+END deriv
+
+SUBROUTINE vetaTOuvw(POINTER TO ARRAY(*,*,*) OF VELOCITY V)
+! Remember: eta=+I*beta*u-I*alfa*w
+WITH V(0,0,*): w.REAL=u.IMAG; u.IMAG=0; w.IMAG=0
+PARALLEL LOOP FOR ismp=0 TO nsmp-1
+  LOOP FOR ix=ismp*(nx+1) DIV nsmp TO (ismp+1)*(nx+1) DIV nsmp -1 AND ALL iz EXCEPT ix=0 AND iz=0
+    WITH V(ix,iz,*):
+    deriv(v.REAL,w.REAL)
+    deriv(v.IMAG,w.IMAG)
+  REPEAT
+  LOOP FOR ix=ismp*(nx+1) DIV nsmp TO (ismp+1)*(nx+1) DIV nsmp -1
+    alfa=alfa0*ix
+    LOOP FOR ALL iz EXCEPT ix=0 AND iz=0
+      WITH V(ix,iz,*):
+      beta=beta0*iz; k2=alfa^2+beta^2
+      DO temp=I*(alfa*w(iy)-beta*u(iy))/k2
+        w(iy)=I*(beta*w(iy)+alfa*u(iy))/k2 
+        u(iy)=temp
+      FOR ALL iy
+    REPEAT
+  REPEAT
+REPEAT
+END vetaTOuvw
+
+SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF VELOCITY V)
+  IF has_terminal THEN WRITE "Reading velocity field:", field_name
+  clock = wallclock()
+  diskfield=OPEN(field_name)
+  WITH diskfield:
+    LOOP FOR iy = -1 TO ny+1
+      DO V(ix,*,iy).v=fieldimage(iy,ix,*).v; V(ix,*,iy).u=fieldimage(iy,ix,*).eta FOR ALL ix
+    REPEAT LOOP
+    V(0,0,*).u.REAL=uavimage(-1..ny+1)
+    V(0,0,*).w.REAL=wavimage(-1..ny+1)
+    vetaTOuvw(V)
+    V(0,0,*).u.REAL=uavimage(-1..ny+1)
+    V(0,0,*).w.REAL=wavimage(-1..ny+1)
+  CLOSE diskfield
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END read_field
+
+SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr)
+  SHARED ARRAY(0..nx,-nz..nz,-1..ny+1) OF VELOCITY V
+  ! Load velocity field
+  read_field(field_name,V)
+  ! Compute active field
+  SHARED ARRAY(0..nx,-nz..nz,-1..ny+1) OF VELOCITY field=0
+#ifdef vorticity
+  IF has_terminal THEN WRITE "Computing vorticity..."
+  clock = wallclock()
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR ix=ismp*(nx+1) DIV nsmp TO (ismp+1)*(nx+1) DIV nsmp -1 
+      ialfa=I*ix*alfa0
+      LOOP FOR iz=-nz TO nz WITH V(ix,iz,*):
+         ibeta=I*iz*beta0
+         deriv(w.REAL,field(ix,iz,*).u.REAL); deriv(w.IMAG,field(ix,iz,*).u.IMAG) 
+         deriv(u.REAL,field(ix,iz,*).w.REAL); field(ix,iz,*).w.REAL=~*(-1)
+         deriv(u.IMAG,field(ix,iz,*).w.IMAG); field(ix,iz,*).w.IMAG=~*(-1)
+         field(ix,iz,*).u(*) = ~ - ibeta*w(*)
+         field(ix,iz,*).v(*) = ibeta*u(*) - ialfa*w(*)
+         field(ix,iz,*).w(*) = ~ + ialfa*v(*)
+      REPEAT
+    REPEAT
+  REPEAT
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+#else 
+  field=V
+#endif
+  IF has_terminal THEN WRITE "Computing active vector field..."
+  clock = wallclock()
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR ix=ismp*(nx+1) DIV nsmp TO (ismp+1)*(nx+1) DIV nsmp -1 
+      alfa2=(ix*alfa0)**2
+      LOOP FOR iz=-nz TO nz WITH field(ix,iz,*):
+         beta2=(iz*beta0)**2
+         ARRAY(-1..ny+1) OF VELOCITY tmp=0
+         deriv2(u.REAL,tmp(*).u.REAL); deriv2(u.IMAG,tmp(*).u.IMAG) 
+         deriv2(v.REAL,tmp(*).v.REAL); deriv2(v.IMAG,tmp(*).v.IMAG) 
+         deriv2(w.REAL,tmp(*).w.REAL); deriv2(w.IMAG,tmp(*).w.IMAG) 
+         tmp(*).u = ni*[~ - alfa2*u(*) - beta2*u(*)];
+         tmp(*).v = ni*[~ - alfa2*v(*) - beta2*v(*)];
+         tmp(*).w = ni*[~ - alfa2*w(*) - beta2*w(*)];
+         field(ix,iz,*)=tmp(*)
+      REPEAT
+    REPEAT
+  REPEAT
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+  ! Transform it to physical space
+  clock = wallclock()
+  IF has_terminal THEN WRITE "Converting the fields to physical space"
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+  DO
+    ARRAY(0..nxd-1,0..nzd-1) OF VELOCITY Vd=0,AVFd=0
+    Vd(0..nx,0..nz) = V(0..nx,0..nz,iy); Vd(0..nx,nzd+(-nz..-1)) = V(0..nx,-nz..-1,iy) 
+    AVFd(0..nx,0..nz) = field(0..nx,0..nz,iy); AVFd(0..nx,nzd+(-nz..-1)) = field(0..nx,-nz..-1,iy) 
+    DO 
+       WITH Vd(ix,*): IFT[u]; IFT[v]; IFT[w] 
+       WITH AVFd(ix,*): IFT[u]; IFT[v]; IFT[w] 
+    FOR ix=0 TO nx
+    DO 
+       WITH Vd(*,iz): RFT[u]; RFT[v]; RFT[w] 
+       WITH AVFd(*,iz): RFT[u]; RFT[v]; RFT[w] 
+    FOR ALL iz
+    DO 
+      Vr(ix,iz,iy).u = Vd(*,iz).u.REALIFIED(ix)
+      Vr(ix,iz,iy).v = Vd(*,iz).v.REALIFIED(ix)
+      Vr(ix,iz,iy).w = Vd(*,iz).w.REALIFIED(ix)
+      AVFr(ix,iz,iy).fx = AVFd(*,iz).u.REALIFIED(ix)
+      AVFr(ix,iz,iy).fy = AVFd(*,iz).v.REALIFIED(ix)
+      AVFr(ix,iz,iy).fz = AVFd(*,iz).w.REALIFIED(ix)
+    FOR ix=0 TO 2*nxd-1 AND iz=0 TO nzd-1
+  FOR iy=-1+ismp TO ny+1 BY nsmp
+  REPEAT
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END readVelocityField
+
+END channelInterface
+
