@@ -5,7 +5,7 @@
 
 This repository is the reference implementation of the active barriers for a turbulent channel described in 
 
-``` G. Haller et al., "Objective material barriers to the transport of momentum and vorticity", submitted to Journal of Fluid Mechanics, 2020 ```
+``` Haller, G., Katsanoulis, S., Holzner, M., Frohnapfel, B., & Gatti, D. (2020). "Objective barriers to the transport of dynamically active vector fields" Journal of Fluid Mechanics, 905, A17. doi:10.1017/jfm.2020.737 ```
 
 ### Description
 
@@ -27,4 +27,4 @@ Kaiserstraße 10
 
 If you use this code and find it helpful, please cite:  
 
-``` G. Haller et al., "Objective material barriers to the transport of momentum and vorticity", submitted to Journal of Fluid Mechanics, 2020 ```
+``` Haller, G., Katsanoulis, S., Holzner, M., Frohnapfel, B., & Gatti, D. (2020). "Objective barriers to the transport of dynamically active vector fields" Journal of Fluid Mechanics, 905, A17. doi:10.1017/jfm.2020.737 ```
