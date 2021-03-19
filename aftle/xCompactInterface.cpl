@@ -1,0 +1,200 @@
+!====================================!
+!                                    !
+!        xCompact3D interface        !
+!                                    !
+!====================================!
+! 
+! This module exposes a single function
+! that returns the velocity and active field
+! in phyiscal space
+! 
+! to cite this software:              
+! 
+! G. Haller, S. Katsanoulis, M. Holzner,  
+! B. Frohnapfel and D. Gatti, Objective  
+! material barriers to the transport of   
+! momentum and vorticity. submitted (2020)
+! 
+
+SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
+
+MODULE channelInterface
+
+POINTER TO STORED STRUCTURE(
+  ARRAY(0..2,0..nzd-1,0..ny,0..nxd-1) OF REAL fieldimage
+  ) diskfield
+
+SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+  IF has_terminal THEN WRITE "Reading velocity field:", field_name
+  clock = wallclock()
+  diskfield=OPEN(field_name)
+  WITH diskfield:
+    LOOP FOR iV=0 TO 2 AND iz=0 TO nzd-1
+       ARRAY(0..ny, 0..nxd-1) OF REAL buf = fieldimage(iV,iz,*,*);
+       DO V(ix,iz,iy,iV) = buf(iy,ix) FOR iy=0 TO ny AND ix=0 TO nxd-1
+    REPEAT
+    CLOSE diskfield
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END read_field
+
+! Coefficients required for derivatives
+REAL alfa1 = 1.0/3.0; a1=14.0/9.0; b1=1.0/9.0
+REAL alfa2=[272-45*PI**2]/[416-90*PI**2], a2=[48-135*PI**2]/[1664-360*PI**2]
+REAL b2=[528-81*PI**2]/[208-45*PI**2], c2=[-432+63*PI**2]/[1664-360*PI**2]
+REAL dx=Lx/nxd, dz=Lz/nzd, dxi=1/ny
+gamma=1.0; delta=0.5 !TODO read this from input
+DERIVCOEFFS = STRUCTURE[ARRAY(-1..1) OF REAL d01,d02; ARRAY(-3..3) OF REAL d2; ARRAY(-2..2) OF REAL d1]
+DERIVCOEFFS derivx(0..nxd-1)=0, derivy(0..ny)=0, derivz(0..nzd-1)=0
+! x-derivatives
+ARRAY(0..nxd-1) OF REAL uux1=0,uux2=0; uux1(LO)=-1; uux1(HI)=alfa1;  uux2(LO)=-1; uux2(HI)=alfa2
+ARRAY(0..nxd-1) OF REAL vvx1=0,vvx2=0; vvx1(LO)=1;  vvx1(HI)=-alfa1; vvx2(LO)=1;  vvx2(HI)=-alfa2
+DO WITH derivx(ix): 
+   d02(-1)=alfa2; d02(0)=1; d02(1)=alfa2 
+   d01(-1)=alfa1; d01(0)=1; d01(1)=alfa1
+   d2(0)=-2*[a2+b2/4+c2/9]/dx/dx
+   d2(1)=a2/dx/dx;   d2(-1)=d2(1)
+   d2(2)=b2/dx/dx/4; d2(-2)=d2(2)
+   d2(3)=c2/dx/dx/9; d2(-3)=d2(3)
+   d1(0)=0
+   d1(1)=a1/dx/2; d1(-1)=-d1(1)
+   d1(2)=b1/dx/4; d1(-2)=-d1(2)
+FOR ALL ix
+derivx(0).d01(0)=~+1; derivx(0).d01(-1)=0; derivx(nxd-1).d01(0)=~+alfa1**2; derivx(nxd-1).d01(1)=0
+derivx(0).d02(0)=~+1; derivx(0).d02(-1)=0; derivx(nxd-1).d02(0)=~+alfa2**2; derivx(nxd-1).d02(1)=0
+LUdecomp derivx.d01; LUdecomp derivx.d02; uux1=derivx.d01\uux1; uux2=derivx.d02\uux2
+! z-derivatives
+ARRAY(0..nzd-1) OF REAL uuz1=0,uuz2=0; uuz1(LO)=-1; uuz1(HI)=alfa1;  uuz2(LO)=-1; uuz2(HI)=alfa2
+ARRAY(0..nzd-1) OF REAL vvz1=0,vvz2=0; vvz1(LO)=1;  vvz1(HI)=-alfa1; vvz2(LO)=1;  vvz2(HI)=-alfa2
+DO WITH derivz(iz): 
+   d02(-1)=alfa2; d02(0)=1; d02(1)=alfa2 
+   d01(-1)=alfa1; d01(0)=1; d01(1)=alfa1
+   d2(0)=-2*[a2+b2/4+c2/9]/dz/dz
+   d2(1)=a2/dz/dz;   d2(-1)=d2(1)
+   d2(2)=b2/dz/dz/4; d2(-2)=d2(2)
+   d2(3)=c2/dz/dz/9; d2(-3)=d2(3)
+   d1(0)=0
+   d1(1)=a1/dz/2; d1(-1)=-d1(1)
+   d1(2)=b1/dz/4; d1(-2)=-d1(2)
+FOR ALL iz
+derivz(0).d01(0)=~+1; derivz(0).d01(-1)=0; derivz(nzd-1).d01(0)=~+alfa1**2; derivz(nzd-1).d01(1)=0
+derivz(0).d02(0)=~+1; derivz(0).d02(-1)=0; derivz(nzd-1).d02(0)=~+alfa2**2; derivz(nzd-1).d02(1)=0
+LUdecomp derivz.d01; LUdecomp derivz.d02; uuz1=derivz.d01\uuz1; uuz2=derivz.d02\uuz2
+! y-derivatives
+DO WITH derivy(iy): 
+   IF iy>2 AND iy<ny-2 THEN 
+     d02(-1)=alfa2; d02(0)=1; d02(1)=alfa2 
+     d2(0)=-2*[a2+b2/4+c2/9]/dxi/dxi
+     d2(1)=a2/dxi/dxi;   d2(-1)=d2(1)
+     d2(2)=b2/dxi/dxi/4; d2(-2)=d2(2)
+     d2(3)=c2/dxi/dxi/9; d2(-3)=d2(3)
+   END IF
+   d01(-1)=alfa1; d01(0)=1; d01(1)=alfa1
+   d1(0)=0
+   d1(1)=a1/dxi/2; d1(-1)=-d1(1)
+   d1(2)=b1/dxi/4; d1(-2)=-d1(2)
+FOR iy=2 TO ny-2
+
+WITH derivy(0):    d01(0)=1;     d01(1)=2;   d1(0)=-5/2/dxi;   d1(1)=4/2/dxi;       d1(2)=0.5/dxi
+WITH derivy(0):    d02(0)=1;     d02(1)=11;  d2(0)=13/dxi/dxi; d2(1)=-27/dxi/dxi;   d2(2)=15/dxi/dxi;    d2(3)=-1/dxi/dxi
+
+WITH derivy(1):    d01(-1)=1/4;  d01(0)=1;   d01(1)=1/4;       d1(-1)=-3/4/dxi;     d1(0)=0;             d1(1)=3/4/dxi
+WITH derivy(1):    d02(-1)=1/10; d02(0)=1;   d02(1)=1/10;      d2(-1)=6/5/dxi/dxi;  d2(0)=-12/5/dxi/dxi; d2(1)=6/5/dxi/dxi
+
+WITH derivy(2):    d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+WITH derivy(ny-2): d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+
+WITH derivy(ny-1): d01(-1)=1/4;  d01(0)=1;   d01(1)=1/4;       d1(-1)=-3/4/dxi;     d1(0)=0;             d1(1)=3/4/dxi
+WITH derivy(ny-1): d02(-1)=1/10; d02(0)=1;   d02(1)=1/10;      d2(-1)=6/5/dxi/dxi;  d2(0)=-12/5/dxi/dxi; d2(1)=6/5/dxi/dxi
+
+WITH derivy(ny):   d01(0)=1;     d01(-1)=2;  d1(0)=5/2/dxi;     d1(-1)=-4/2/dxi;     d1(-2)=-0.5/dxi
+WITH derivy(ny):   d02(0)=1;     d02(-1)=11; d2(0)=13/dxi/dxi;  d2(-1)=-27/dxi/dxi;  d2(-2)=15/dxi/dxi;  d2(-3)=-1/dxi/dxi
+LUdecomp derivy.d01; LUdecomp derivy.d02
+! stretching functions 
+REAL beta = a/(ymax-ymin)
+REAL alfah = {-1 + SQRT[1+4*(beta**2)*PI**2]}/[2*beta]
+ARRAY(0..ny) OF REAL hp,one_hp,one_hp2,hpp_hp3,hpp
+DO 
+  REAL xi = i*dxi
+  hp(i)      = (ymax-ymin)*{PI*beta/[alfah*beta+SIN(PI*{gamma*xi+delta})**2]}  
+  one_hp(i)  = [alfah*beta+SIN(PI*{gamma*xi+delta})**2]/[PI*beta]/(ymax-ymin)
+  one_hp2(i) = one_hp(i)**2
+  hpp_hp3(i) = {-2*gamma*SIN[PI*{gamma*xi+delta}]*COS[PI*{gamma*xi+delta}]/[(ymax-ymin)*beta]}*one_hp(i)
+FOR ALL i
+!DO WITH derivy(i): hpp(i) = [SUM d1(j)*hp((i+j)) FOR ALL j EXCEPT (i+j)<0 OR (i+j)>ny] FOR ALL i
+!hpp = derivy.d01\hpp
+!DO hpp_hp3(i) = hpp(i)/hp(i)**3 FOR ALL i
+
+! derivatives functions and macros
+
+SUBROUTINE deriv(ARRAY(*,*) OF REAL D,D0; ARRAY(*) OF REAL zzz,vvv,f; 
+                 POINTER TO ARRAY(*) OF REAL df)
+  ARRAY(f.LO..f.HI) OF REAL yy,dd
+  DO dd(i) = [SUM D(i,j)*f((i+j) MOD f.LENGTH) FOR ALL j] FOR i=f.LO TO f.HI 
+  yy = D0\dd
+  DO df(i) = yy(i) - zzz(i)*[SUM yy(j)*vvv(j) FOR ALL j]/{1+[SUM vvv(j)*zzz(j) FOR ALL j]} FOR ALL i
+END deriv
+#define d1x(f,df) deriv(derivx.d1,derivx.d01,uux1,vvx1,f,df)
+#define d2x(f,df) deriv(derivx.d2,derivx.d02,uux2,vvx2,f,df)
+#define d1z(f,df) deriv(derivz.d1,derivz.d01,uuz1,vvz1,f,df)
+#define d2z(f,df) deriv(derivz.d2,derivz.d02,uuz2,vvz2,f,df)
+SUBROUTINE d1y(ARRAY(*) OF REAL f; POINTER TO ARRAY(*) OF REAL df)
+  DO WITH derivy(i): df(i) = [SUM d1(j)*f((i+j)) FOR ALL j EXCEPT (i+j)<0 OR (i+j)>ny] FOR i=f.LO TO f.HI 
+  df = derivy.d01\df
+  DO df(i) = ~*one_hp(i) FOR ALL i
+END d1y
+SUBROUTINE d2y(ARRAY(*) OF REAL f; POINTER TO ARRAY(*) OF REAL df)
+  ARRAY(f.LO..f.HI) OF REAL df_ds,d2f_ds2
+  DO WITH derivy(i): 
+    df_ds(i)   = [SUM d1(j)*f((i+j)) FOR ALL j EXCEPT (i+j)<0 OR (i+j)>ny] 
+    d2f_ds2(i) = [SUM d2(j)*f((i+j)) FOR ALL j EXCEPT (i+j)<0 OR (i+j)>ny] 
+  FOR i=f.LO TO f.HI     
+  df_ds = derivy.d01\~; d2f_ds2 = derivy.d02\~
+  DO df(i) = d2f_ds2(i)*one_hp2(i) - df_ds(i)*hpp_hp3(i) FOR ALL i
+END d2y
+
+!(
+! TESTS 
+!test-x
+ARRAY(0..nxd-1) OF REAL xtestf=0,xtestdf=0,xtestd2f=0; DO xtestf(i)=SIN(2*PI*i*dx/Lx) FOR ALL i
+d1x(xtestf,xtestdf)
+d2x(xtestf,xtestd2f)
+WRITE \n"x-derivative: tests"
+DO WRITE xtestdf(i), 2*PI/Lx*COS(2*PI*i*dx/Lx), xtestd2f(i), -(2*PI/Lx)**2*SIN(2*PI*i*dx/Lx) FOR ALL i
+!test-z
+ARRAY(0..nzd-1) OF REAL ztestf=0,ztestdf=0,ztestd2f=0; DO ztestf(i)=SIN(2*PI*i*dz/Lz) FOR ALL i
+d1z(ztestf,ztestdf)
+d2z(ztestf,ztestd2f)
+WRITE \n"z-derivative: tests"
+DO WRITE ztestdf(i), 2*PI/Lz*COS(2*PI*i*dz/Lz), ztestd2f(i), -(2*PI/Lz)**2*SIN(2*PI*i*dz/Lz) FOR ALL i
+!test-y
+ARRAY(0..ny) OF REAL testf=0,testdf=0,testd2f=0; DO testf(i)=y(i)**2 FOR i=0 TO ny
+d1y(testf,testdf); d2y(testf,testd2f)
+!ARRAY(0..nxd-1) OF REAL testf=0,testdf=0; DO testf(i)=SIN(2*PI*i/nxd) FOR ALL i
+!deriv(derivx.d2,derivx.d0,uuux,vvx,testf,testdf)
+WRITE \n"y-derivative: tests"
+DO WRITE testdf(i), 2*y(i), testd2f(i), 2 FOR i=0 TO ny
+! This will just stop the code execution, of course remove it when derivative tests are conluded
+STOP
+!)
+
+SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr)
+  ! Load velocity field
+  read_field(field_name,Vr)
+  ! Compute active field
+  ! XXX SHARED ARRAY(0..nx,-nz..nz,-1..ny+1) OF VELOCITY field=0
+#ifdef vorticity
+  IF has_terminal THEN WRITE "Computing vorticity..."
+  clock = wallclock()
+  ! XXX TODO field <-- omega
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+#else 
+  field=V
+#endif
+  IF has_terminal THEN WRITE "Computing active vector field..."
+  clock = wallclock()
+  ! XXX TODO field <-- lapl(field)
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END readVelocityField
+
+END channelInterface
+

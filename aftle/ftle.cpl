@@ -37,7 +37,7 @@ IF dummyFlowMapFile#NULL THEN
 
 ELSE
 
-! Read the flowmap
+! Read the barrier field 
 INTEGER iF = atoi(COMMANDLINE(4))
 load_barrierField(iF)
 DO barrierField(****)(i) = ~/(iF*deltat) FOR ALL i

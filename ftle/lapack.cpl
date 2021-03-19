@@ -1,0 +1,40 @@
+! compile with -fp-trap-all=nodivzero with Intel
+
+USE complex
+#link "-llapack -lblas"
+
+INLINE ARRAY(A.LO..A.HI) OF COMPLEX FUNCTION eigv(COMPLEX A(*,*))
+INTEGER SDIM,info
+LA=LENGTH(A)
+IF LA#LENGTH(A(LO)) THEN ERROR "matrix is not square"
+LWORK=3*LA
+COMPLEX WORK(1..LWORK)
+REAL RWORK(1..LA)
+COMPLEX Acopy(0..LA-1,0..LA-1)=A(LO+*,LO+*)
+FORTRANCALL zgees("N","N",NULL,LA,Acopy,STRIDEOF(Acopy),SDIM,RESULT,NULL,LA,WORK,LWORK,RWORK,NULL,info)
+IF info#0 THEN ERROR "zgees: " info
+END eigv
+
+INLINE ARRAY(A.LO..A.HI) OF COMPLEX FUNCTION eigv(REAL A(*,*))
+INTEGER SDIM,info
+LA=LENGTH(A)
+IF LA#LENGTH(A(LO)) THEN ERROR "matrix is not square"
+LWORK=3*LA
+REAL WORK(1..LWORK)
+REAL WR(1..LA),WI(1..LA)
+REAL Acopy(0..LA-1,0..LA-1)=A(LO+*,LO+*)
+FORTRANCALL dgees("N","N",NULL,LA,Acopy,STRIDEOF(Acopy),SDIM,WR,WI,NULL,LA,WORK,LWORK,NULL,info)
+IF info#0 THEN ERROR "dgees: " info
+RESULT(*+LO-1).REAL=WR; RESULT(*+LO-1).IMAG=WI
+END eigv
+
+SUBROUTINE svd(ARRAY(*,*) OF REAL A; POINTER TO ARRAY(*) OF REAL SVD)
+INTEGER info
+LA1=LENGTH(A)
+LA2=LENGTH(A(LO))
+LWORK=LA1*LA2*50
+REAL WORK(0..LWORK)
+REAL Acopy(0..LA1-1,0..LA2-1)=A(LO+*,LO+*)
+FORTRANCALL dgesvd("N","N",LA1,LA2,Acopy,STRIDEOF(Acopy),SVD,NULL,LA1,NULL,LA1,WORK,LWORK,info)
+IF info#0 THEN ERROR "dgesvd: " info
+END svd

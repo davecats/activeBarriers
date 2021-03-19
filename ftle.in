@@ -1,9 +1,0 @@
-ny=256 		nx=128		nz=128
-ox=1        oy=1        oz=1
-ofx=1      ofy=6      ofz=6
-alfa0=0.5	beta0=1.0
-ymin=0		ymax=2		a=1.5
-ni=6500		
-deltat=0.01     deltas=0.040625    smax=130
-nfmin=2001      nfmax=4001     dn_save=25
-path=../linktofields/

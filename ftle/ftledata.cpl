@@ -1,0 +1,256 @@
+!"!====================================!"
+!"!                                    !"
+!"!  Data structures, subroutines and  !"
+!"!            definitions             !"
+!"!                                    !"
+!"!====================================!"
+!"! "
+!"! to cite this software:              "
+!"! "
+!"! G. Haller, S. Katsanoulis, M. Holzner, " 
+!"! B. Frohnapfel and D. Gatti, Objective  "
+!"! material barriers to the transport of  " 
+!"! momentum and vorticity. submitted (2020)"
+!"! "
+
+USE fft
+USE rbmat
+USE parallel
+USE wallclock
+!USE rtchecks
+
+! Definitions
+! ------------------------------------------------------------------------------
+ODE==RK4
+#define xcompact
+
+! Chron
+! ------------------------------------------------------------------------------
+REAL clock
+
+! Parallel  (distributed memory - could actually use MPI as well!)
+! ------------------------------------------------------------------------------
+INTEGER iproc,nproc
+IF COMMANDLINE.HI<1 THEN iproc=1; nproc=1 ELSE
+iproc=atoi(COMMANDLINE(1)); nproc=atoi(COMMANDLINE(2)); END IF
+bufsize=800; baseport=IPPORT_USERRESERVED+111
+FILE prev,next
+IF iproc<nproc THEN
+  next=fdopen(tcpserver(baseport+iproc),"r+")
+  setvbuf(next,malloc(bufsize),_IOFBF,bufsize)
+END IF
+IF iproc>1 THEN
+  prev=fdopen(tcpclient(COMMANDLINE(3),baseport+iproc-1),"r+")
+  setvbuf(prev,malloc(bufsize),_IOFBF,bufsize)
+END IF
+first==(prev=NULL FILE); last==(next=NULL FILE); has_terminal==last
+
+! Parallel (shared memory)
+! ------------------------------------------------------------------------------
+nsmp = 64
+
+! Types
+! ------------------------------------------------------------------------------
+REALVEL = STRUCTURED ARRAY(u,v,w) OF REAL
+INLINE FUNCTION imod(INTEGER i)=(i)MOD(2)
+
+! Read input files and set parameters
+! ------------------------------------------------------------------------------
+INTEGER ny,nx,nz,ox,oy,oz,nxd=0,nzd=0
+REAL alfa0, beta0, a, ymin, ymax, ni, deltat, Lx=0, Lz=0
+INTEGER nfmin, nfmax, dn_save
+STRING path
+SUBROUTINE read_initial_data
+ FILE in_data=OPEN("ftle.in")
+ !READ BY NAME FROM in_data ny,nx,nz,ox,oy,oz,ofx,ofy,ofz,alfa0,beta0,ymin,ymax,a,ni, deltat, deltas, smax; ni=1/ni
+ READ BY NAME FROM in_data ny
+ DO WHILE READ BY NAME FROM in_data nx OR nxd; IF nxd=0 THEN nxd=3*nx DIV 2 - 1; DO INC nxd UNTIL FFTfit(nxd); nxd=2*~; END IF
+ DO WHILE READ BY NAME FROM in_data nz OR nzd; IF nzd=0 THEN nzd=3*nz - 1; DO INC nzd UNTIL FFTfit(nzd); END IF
+ READ BY NAME FROM in_data ox,oy,oz
+ DO WHILE READ BY NAME FROM in_data alfa0 OR Lx; IF Lx=0 THEN Lx=2*PI/alfa0 ELSE alfa0=2*PI/Lx;
+ DO WHILE READ BY NAME FROM in_data beta0 OR Lz; IF Lz=0 THEN Lz=2*PI/beta0 ELSE beta0=2*PI/Lz;
+ READ BY NAME FROM in_data ymin, ymax, a, ni, deltat; ni=1/ni
+ READ BY NAME FROM in_data nfmin,nfmax,dn_save
+ READ BY NAME FROM in_data path
+ CLOSE in_data
+ IF has_terminal THEN
+   WRITE BY NAME nproc,nsmp
+   WRITE BY NAME nxd, nzd, ny
+   WRITE BY NAME ox, oy, oz
+   WRITE BY NAME ymin, ymax, a, alfa0, beta0, 1/ni
+   WRITE BY NAME deltat
+ END IF
+END read_initial_data
+read_initial_data
+dir=SIGN(nfmax-nfmin)
+IF dir>0 THEN IF has_terminal THEN WRITE "Forward aFTLE"
+IF dir<0 THEN IF has_terminal THEN WRITE "Backward aFTLE"
+
+! Define grids
+! ------------------------------------------------------------------------------
+REAL y(-1..ny+1); nyl=1+(iproc-1)*(ny-1) DIV nproc; nyh=iproc*(ny-1) DIV nproc
+#ifndef xcompact
+DO y(i)=ymin+0.5*(ymax-ymin)*[tanh(a*(2*i/ny-1))/tanh(a)+0.5*(ymax-ymin)] FOR ALL i !Channel
+#else
+FILE coordfile=OPENRO("yp.dat")
+READ FROM coordfile y(0..ny)
+CLOSE coordfile
+y(-1)=-y(1); y(ny+1) = y(ny) + y(ny)-y(ny-1)
+#endif
+
+! Define velocity fields
+! ------------------------------------------------------------------------------
+STRING fieldname 
+SHARED ARRAY(0..nxd-1, 0..nzd-1, -1..ny+1, 0..2) OF REALVEL velocity=0
+
+! Module for operating with velocity fields
+! ------------------------------------------------------------------------------
+#ifndef xcompact
+USE channelInterface
+#else
+USE xCompactInterface
+#endif
+
+! ODE Library
+! ------------------------------------------------------------------------------
+
+ARRAY(1..4,1..4) OF REAL RK4
+RK4(1,1)=1020/240; RK4(1,2)=2.0;    RK4(1,3)=0;       RK4(1,4)=0
+RK4(2,1)=1020/32;  RK4(2,2)=289/32; RK4(2,3)=-225/32; RK4(2,4)=2.*240/1020
+RK4(3,1)=1020/68;  RK4(3,2)=25/4;   RK4(3,3)=-17/4;   RK4(3,4)=2.*(240+32)/1020
+RK4(4,1)=1020/170; RK4(4,2)=9/2;   RK4(4,3)=-5/2;     RK4(4,4)=2.*(240+32+68)/1020
+
+SUBROUTINE timescheme(COMPLEX rhs^,old^(*),unkn,impl,expl; INTEGER it)
+  rhs=ODE(it,1)/deltat*unkn+impl+ODE(it,2)*expl+ODE(it,3)*old(1)
+  old(1)=expl
+END timescheme
+
+! Velocity field interpolators
+! ------------------------------------------------------------------------------
+SUBROUTINE linearInterpolator(ARRAY(*,*,*) OF REALVEL Vi, Ve; POINTER TO ARRAY(*,*,*) OF REALVEL Vo; INTEGER it)
+  REAL lambda=ODE(it,4)
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR ix=ismp*(nxd) DIV nsmp TO (ismp+1)*(nxd) DIV nsmp -1
+       DO Vo(ix,iz,iy,i) = [ Vi(ix,iz,iy,i)*(1-lambda) + Ve(ix,iz,iy,i)*lambda ]*dir FOR ALL iz,iy,i
+    REPEAT
+  REPEAT
+END linearInterpolator
+
+! Particle tracks: definitions
+! ------------------------------------------------------------------------------
+PARTICLE = STRUCTURED ARRAY(xp,yp,zp,xxp,yyp,zzp,up,vp,wp) OF REAL
+ARRAY(0..0) OF REAL xx=0; xx(0)=PI/alfa0
+#ifdef slices
+ARRAY(0..0) OF REAL xx=0; xx(0)=PI/alfa0
+nx_part=xx.LENGTH
+dx_part=2*PI/(alfa0*nx_part)
+#else
+nx_part=nxd*ox;
+REAL dx_part=2*PI/(alfa0*nx_part)
+ARRAY(0..nx_part-1) OF REAL xx=0; DO xx(ix)=ix*dx_part FOR ALL ix
+#endif
+nz_part=nzd*oz; 
+REAL dz_part=2*PI/(beta0*nz_part)
+ARRAY(0..nz_part-1) OF REAL zz=0; DO zz(iz)=iz*dz_part FOR ALL iz
+ny_part=ny*oy;
+REAL yy(-1..ny_part+1)
+DO yy(i)=ymin+0.5*(ymax-ymin)*[tanh(a*(2*i/ny_part-1))/tanh(a)+0.5*(ymax-ymin)] FOR ALL i
+INTEGER np = 6*nx_part*nz_part*(ny_part-1)
+IF has_terminal THEN
+  WRITE "Seeding particles in the barrier field ..."
+  WRITE "","this will require additional " SIZEOF(ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE)/(1024.0**3) " GiB of memory ..."
+END IF
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE particles
+POINTER TO STORED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE diskparticles
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF BOOLEAN hitBoundary=0
+INTEGER iytr
+ARRAY(1..6) OF REAL Wx, Wz, Wxp, Wzp; ARRAY(0..5) OF REAL Wy, Wyp; ARRAY(1..6) OF INTEGER ixv, izv
+INTEGER ordy, ixp, iyp, izp; REAL vpoldu,vpoldv,vpoldw
+REAL dx=2*PI/(alfa0*nxd), dz=2*PI/(beta0*nzd)
+Wx(1)=1/(-120*dx^5);Wx(2)=1/(24*dx^5);Wx(3)=1/(-12*dx^5);Wx(4)=1/(12*dx^5);Wx(5)=1/(-24*dx^5);Wx(6)=1/(120*dx^5)
+Wz(1)=1/(-120*dz^5);Wz(2)=1/(24*dz^5);Wz(3)=1/(-12*dz^5);Wz(4)=1/(12*dz^5);Wz(5)=1/(-24*dz^5);Wz(6)=1/(120*dz^5)
+DO Wy(j)=1 FOR ALL j
+epsx=MIN[dx,dx_part]/100; epsy=[y(1)-y(0)]/100; epsz=MIN[dz,dz_part]/100;
+LOOP FOR ix=0 TO nx_part-1 AND iz=0 TO nz_part-1 AND iy=1 TO ny_part-1 WITH particles(ix,iz,iy,*)
+  xp(0)=xx(ix)+epsx; yp(0)=yy(iy); zp(0)=zz(iz); xxp(0)=xp(0); yyp(0)=yp(0); zzp(0)=zp(0)
+  xp(1)=xx(ix)-epsx; yp(1)=yy(iy); zp(1)=zz(iz); xxp(1)=xp(1); yyp(1)=yp(1); zzp(1)=zp(1)
+  xp(2)=xx(ix); yp(2)=yy(iy)+epsy; zp(2)=zz(iz); xxp(2)=xp(2); yyp(2)=yp(2); zzp(2)=zp(2)
+  xp(3)=xx(ix); yp(3)=yy(iy)-epsy; zp(3)=zz(iz); xxp(3)=xp(3); yyp(3)=yp(3); zzp(3)=zp(3)
+  xp(4)=xx(ix); yp(4)=yy(iy); zp(4)=zz(iz)+epsz; xxp(4)=xp(4); yyp(4)=yp(4); zzp(4)=zp(4)
+  xp(5)=xx(ix); yp(5)=yy(iy); zp(5)=zz(iz)-epsz; xxp(5)=xp(5); yyp(5)=yp(5); zzp(5)=zp(5)
+REPEAT LOOP
+
+! Particle tracks: integration and 
+! ------------------------------------------------------------------------------
+SUBROUTINE advance_trajectories(ARRAY(*,*,*) OF REALVEL V; INTEGER it)
+  COMPLEX coef1, coef2, coeft
+  REAL newcoef, oldcoef
+  ARRAY(1..2) OF COMPLEX vc1=0, vc2=0; vc2(1)=1
+  timescheme(coeft,vc1,1,0,0,it); timescheme(coef2,vc2,0,0,0,it); timescheme(coef1,vc1,0,0,1,it)
+  newcoef=coef1.REAL/coeft.REAL/deltat; oldcoef=coef2.REAL/coeft.REAL/deltat
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    LOOP FOR iii=ismp*(np) DIV nsmp TO (ismp+1)*(np) DIV nsmp -1 WITH particles(****)(iii):
+    !LOOP FOR iix=ismp*(nx_part) DIV nsmp TO (ismp+1)*(nx_part) DIV nsmp -1 AND iiz=1 TO nz_part-1 AND iiy=1 TO ny_part-1 AND iii=0 TO 5 WITH particles(iix,iiz,iiy,iii):
+     IF NOT hitBoundary(****)(iii) THEN
+       iyp = 0;DO INC iyp UNTIL (y(iyp)>yp); iyp =~-3; ixp= FLOOR(xp/dx)-3; izp = FLOOR(zp/dz)-3
+       DO ixv(i) = (ixp+i)MOD(nxd); izv(i) = (izp+i)MOD(nzd) FOR ALL i
+       Wxp=Wx; Wzp=Wz; Wyp=Wy
+       LOOP FOR j=1 TO 6 AND i=1 TO 6 EXCEPT j=i; Wxp(j)=~*(xp -(ixp+i)*dx); Wzp(j) =~*(zp-(izp+i)*dz); REPEAT LOOP
+       IF (iyp=-2 OR iyp=ny-3) THEN ordy=3; iyp=~+1 ELSE  ordy=5  END IF
+       LOOP FOR j=0 TO ordy AND i=0 TO ordy EXCEPT i=j; Wyp(j)=~*(yp - y(iyp+i))/(y(iyp+j)-y(iyp+i)); REPEAT LOOP
+       vpoldu=up; vpoldv=vp; vpoldw=wp; up=0; vp=0; wp=0
+       LOOP FOR j = 0 TO ordy AND ix=1 TO 6 AND iz=1 TO 6
+         up=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).u*Wzp(iz)*Wxp(ix)
+         vp=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).v*Wzp(iz)*Wxp(ix)
+         wp=~+Wyp(j)*V(ixv(ix),izv(iz),iyp+j).w*Wzp(iz)*Wxp(ix)
+       REPEAT LOOP
+       vpoldu=~*oldcoef+newcoef*up; vpoldv=~*oldcoef+newcoef*vp; vpoldw=~*oldcoef+newcoef*wp;
+       xp =~+deltat*vpoldu; xxp=~+deltat*vpoldu; IF xp>nxd*dx THEN xp=~-nxd*dx ELSE IF xp<0 THEN xp=~+nxd*dx END IF
+       yp =~+deltat*vpoldv; yyp=~+deltat*vpoldv
+       IF yp<yy(1) OR yp>yy(ny_part-1) THEN hitBoundary(****)(iii)=YES
+       zp =~+deltat*vpoldw; zzp=~+deltat*vpoldw; IF zp>nzd*dz THEN zp=~-nzd*dz ELSE IF zp<0 THEN zp=~+nzd*dz END IF
+     END IF
+    REPEAT
+  REPEAT
+END advance_trajectories
+
+
+! Save Flowmap XXX TODO Make flowmap a structure which contains all information for the gradient
+! ------------------------------------------------------------------------------
+SUBROUTINE save_flowmap(INTEGER nF)
+  STRING filename=WRITE("particles."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Saving flowmap: "filename
+  FILE diskparticlesf=CREATE(filename)
+  WRITE BINARY TO diskparticlesf particles
+  WRITE BINARY TO diskparticlesf extparticles
+  CLOSE diskparticlesf 
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+!(
+  STRING filename=WRITE("particles."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Saving flowmap: "filename
+  diskparticles=CREATE(filename)
+  diskparticles(*,*,*,*)=particles(*,*,*,*)
+  CLOSE diskparticles
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+!)
+END save_flowmap
+
+! Load Flowmap XXX TODO Make flowmap a structure which contains all information for the gradient
+! ------------------------------------------------------------------------------
+SUBROUTINE load_flowmap(INTEGER nF)
+  STRING filename=WRITE("particles."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Saving flowmap: "filename
+  FILE diskparticlesf=OPENRO(filename)
+  READ BINARY FROM diskparticlesf particles
+  READ BINARY FROM diskparticlesf extparticles
+  CLOSE diskparticlesf 
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+!(
+  STRING filename=WRITE("particles."nF".bin")
+  clock = wallclock(); IF has_terminal THEN WRITE "Loading flowmap: "filename
+  diskparticles=OPENRO(filename)
+  particles(*,*,*,*)=diskparticles(*,*,*,*)
+  CLOSE diskparticles
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+!)
+END load_flowmap

@@ -1,0 +1,64 @@
+#define slices
+WRITE "!====================================!"
+WRITE "!                                    !"
+WRITE "!            F  T  L  E              !"
+WRITE "!                                    !"
+WRITE "!====================================!"
+WRITE "! "
+WRITE "! This program computes the F T L E   "
+WRITE "! and the P R A diagnostics given a   "
+WRITE "! flowmap                             " 
+WRITE "! "
+WRITE "! to cite this software:              "
+WRITE "! "
+WRITE "! G. Haller, S. Katsanoulis, M. Holzner, " 
+WRITE "! B. Frohnapfel and D. Gatti, Objective  "
+WRITE "! material barriers to the transport of  " 
+WRITE "! momentum and vorticity. submitted (2020)"
+WRITE "! "
+USE ftledata
+USE ./lapacksvd
+
+! Read the field number
+INTEGER iF = atoi(COMMANDLINE(4))
+
+SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1) OF REAL FTLE, PRA
+load_flowmap(iF)
+IF has_terminal THEN WRITE "Computing FTLEs..."
+PARALLEL LOOP FOR ismp=0 TO nsmp-1
+   !SHARED ARRAY(0..nx_part-1,0..nz_part-1,1..ny_part-1,0..5) OF PARTICLE particles
+   LOOP FOR iii=ismp*(np DIV 6) DIV nsmp TO (ismp+1)*(np DIV 6) DIV nsmp -1 WITH particles(***,*)(iii,*):
+       ! Compute the flowmap gradient
+       ARRAY(0..2,0..2) OF REAL gradFlowMap, C
+       gradFlowMap(0,0) = [xxp(0) - xxp(1)]/(2*epsx)
+       gradFlowMap(1,0) = [xxp(2) - xxp(3)]/(2*epsy)
+       gradFlowMap(2,0) = [xxp(4) - xxp(5)]/(2*epsz)
+       gradFlowMap(0,1) = [yyp(0) - yyp(1)]/(2*epsx)
+       gradFlowMap(1,1) = [yyp(2) - yyp(3)]/(2*epsy)
+       gradFlowMap(2,1) = [yyp(4) - yyp(5)]/(2*epsz)
+       gradFlowMap(0,2) = [zzp(0) - zzp(1)]/(2*epsx)
+       gradFlowMap(1,2) = [zzp(2) - zzp(3)]/(2*epsy)
+       gradFlowMap(2,2) = [zzp(4) - zzp(5)]/(2*epsz)
+       ! Compute gradFlowMap.transpose*gradFlowMap
+       DO C(i,k) = [SUM gradFlowMap(j,i)*gradFlowMap(j,k) FOR j=0 TO 2]  FOR i=0 TO 2 AND k=0 TO 2
+       ! Compute FTLE
+       ARRAY(0..2) OF REAL sigma
+       svd(C(*,*),sigma)
+       FTLE(***)(iii)=sigma(0)^2
+       ! Compute PRA
+       ARRAY(0..2,0..2) OF REAL L,R; sigma=0
+       svdv(gradFlowMap(*,*),sigma,L,R)
+       PRA(***)(iii)=0.5*{[SUM (SUM L(i,j)*R(j,i) FOR ALL j) FOR ALL i]-1}
+   REPEAT
+REPEAT
+REAL chron=wallclock(); IF has_terminal THEN WRITE "Saving FTLEs..."
+STRING ftlefilename=WRITE("FTLE."iF".bin")
+FILE ftlefile=CREATE(ftlefilename)
+WRITE BINARY TO ftlefile FTLE
+CLOSE ftlefile
+IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+FILE prafile=CREATE("PRA."iF".bin")
+REAL chron=wallclock();  IF has_terminal THEN WRITE "Saving PRAs..."
+WRITE BINARY TO prafile PRA
+CLOSE prafile
+IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"

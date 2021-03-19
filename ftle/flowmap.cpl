@@ -1,0 +1,40 @@
+#define slices
+WRITE "!====================================!"
+WRITE "!                                    !"
+WRITE "!             flowmap                !"
+WRITE "!                                    !"
+WRITE "!====================================!"
+WRITE "! "
+WRITE "! This program computes the flowmap   "
+WRITE "! "
+WRITE "! to cite this software:              "
+WRITE "! "
+WRITE "! G. Haller, S. Katsanoulis, M. Holzner, " 
+WRITE "! B. Frohnapfel and D. Gatti, Objective  "
+WRITE "! material barriers to the transport of  " 
+WRITE "! momentum and vorticity. submitted (2020)"
+WRITE "! "
+USE ftledata
+! 
+INTEGER iF = nfmin
+! 
+WRITE {[IF dir>0 THEN nfmax ELSE iF]-[IF dir>0 THEN iF ELSE nfmax]}
+LOOP WHILE {[IF dir>0 THEN nfmax ELSE iF]-[IF dir>0 THEN iF ELSE nfmax]}>0 
+   IF iF=nfmin THEN
+      fieldname = WRITE(path"Field"iF".fld")
+      readVelocityField(fieldname, velocity(*,*,*,imod(iF)))
+   END IF
+   STRING fieldname = WRITE(path"Field"iF+dir".fld")
+   readVelocityField(fieldname, velocity(*,*,*,imod(iF+dir)))
+   chron=wallclock(); IF has_terminal THEN WRITE "Advances trajectories..."
+   LOOP FOR it=1 TO ODE(1,*).LENGTH
+     linearInterpolator(velocity(*,*,*,imod(iF)), velocity(*,*,*,imod(iF+dir)), velocity(*,*,*,2), it)
+     advance_trajectories(velocity(*,*,*,2), it)
+   REPEAT
+   IF has_terminal THEN WRITE " ","took "wallclock()-chron" seconds"
+   iF=~+dir
+   IF (iF-nfmin) MOD dn_save=0 AND (iF-nfmin)#0 THEN
+     save_flowmap(iF-nfmin)
+   END IF
+REPEAT
+

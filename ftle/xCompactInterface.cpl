@@ -1,0 +1,46 @@
+!====================================!
+!                                    !
+!        xCompact3D interface        !
+!                                    !
+!====================================!
+! 
+! This module exposes a single function
+! that returns the velocity 
+! in phyiscal space
+! 
+! to cite this software:              
+! 
+! G. Haller, S. Katsanoulis, M. Holzner,  
+! B. Frohnapfel and D. Gatti, Objective  
+! material barriers to the transport of   
+! momentum and vorticity. submitted (2020)
+! 
+
+SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr) FOLLOWS
+
+MODULE channelInterface
+
+POINTER TO STORED STRUCTURE(
+  ARRAY(0..2,0..nzd-1,0..ny,0..nxd-1) OF REAL fieldimage
+  ) diskfield
+
+SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+  IF has_terminal THEN WRITE "Reading velocity field:", field_name
+  clock = wallclock()
+  diskfield=OPEN(field_name)
+  WITH diskfield:
+    LOOP FOR iV=0 TO 2 AND iz=0 TO nzd-1
+       ARRAY(0..ny, 0..nxd-1) OF REAL buf = fieldimage(iV,iz,*,*);
+       DO V(ix,iz,iy,iV) = buf(iy,ix) FOR iy=0 TO ny AND ix=0 TO nxd-1
+    REPEAT
+    CLOSE diskfield
+  IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+END read_field
+
+SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr)
+  ! Load velocity field
+  read_field(field_name,Vr)
+END readVelocityField
+
+END channelInterface
+

@@ -1,0 +1,8 @@
+ny=192 		nxd=256		nzd=128
+ox=1            oy=6            oz=6
+Lx=8	Lz=4
+ymin=0		ymax=2		a=1.5
+ni=4226
+deltat=0.00035
+nfmin=750        nfmax=1  dn_save=1
+path=./

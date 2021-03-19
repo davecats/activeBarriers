@@ -3,6 +3,7 @@
 SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
 
 MODULE channelInterface
+INTEGER nxdF=nxd DIV 2
 
 STRUCTURE[ARRAY(-2..2) OF REAL d0,d1,d2,d4] derivatives(1..ny-1)
 ARRAY(-2..2) OF REAL d040,d140,d240,d340,d14m1,d24m1, d04n,d14n,d24n,d14np1,d24np1
@@ -182,7 +183,7 @@ SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALV
   IF has_terminal THEN WRITE "Converting the fields to physical space"
   PARALLEL LOOP FOR ismp=0 TO nsmp-1
   DO
-    ARRAY(0..nxd-1,0..nzd-1) OF VELOCITY Vd=0,AVFd=0
+    ARRAY(0..nxdF-1,0..nzd-1) OF VELOCITY Vd=0,AVFd=0
     Vd(0..nx,0..nz) = V(0..nx,0..nz,iy); Vd(0..nx,nzd+(-nz..-1)) = V(0..nx,-nz..-1,iy) 
     AVFd(0..nx,0..nz) = field(0..nx,0..nz,iy); AVFd(0..nx,nzd+(-nz..-1)) = field(0..nx,-nz..-1,iy) 
     DO 
@@ -200,7 +201,7 @@ SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALV
       AVFr(ix,iz,iy).fx = AVFd(*,iz).u.REALIFIED(ix)
       AVFr(ix,iz,iy).fy = AVFd(*,iz).v.REALIFIED(ix)
       AVFr(ix,iz,iy).fz = AVFd(*,iz).w.REALIFIED(ix)
-    FOR ix=0 TO 2*nxd-1 AND iz=0 TO nzd-1
+    FOR ix=0 TO 2*nxdF-1 AND iz=0 TO nzd-1
   FOR iy=-1+ismp TO ny+1 BY nsmp
   REPEAT
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
