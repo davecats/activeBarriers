@@ -45,7 +45,8 @@ END read_field
 REAL alfa1 = 1.0/3.0; a1=14.0/9.0; b1=1.0/9.0
 REAL alfa2=[272-45*PI**2]/[416-90*PI**2], a2=[48-135*PI**2]/[1664-360*PI**2]
 REAL b2=[528-81*PI**2]/[208-45*PI**2], c2=[-432+63*PI**2]/[1664-360*PI**2]
-REAL dx=Lx/nxd, dz=Lz/nzd, dxi=1/ny
+REAL ly = ymax-ymin
+REAL dx=Lx/nxd, dz=Lz/nzd, dxi=ly/ny
 gamma=1.0; delta=0.5 !TODO read this from input
 DERIVCOEFFS = STRUCTURE[ARRAY(-1..1) OF REAL d01,d02; ARRAY(-3..3) OF REAL d2; ARRAY(-2..2) OF REAL d1]
 DERIVCOEFFS derivx(0..nxd-1)=0, derivy(0..ny)=0, derivz(0..nzd-1)=0
@@ -85,7 +86,7 @@ derivz(0).d02(0)=~+1; derivz(0).d02(-1)=0; derivz(nzd-1).d02(0)=~+alfa2**2; deri
 LUdecomp derivz.d01; LUdecomp derivz.d02; uuz1=derivz.d01\uuz1; uuz2=derivz.d02\uuz2
 ! y-derivatives
 DO WITH derivy(iy): 
-   IF iy>2 AND iy<ny-2 THEN 
+   IF iy>3 AND iy<ny-3 THEN 
      d02(-1)=alfa2; d02(0)=1; d02(1)=alfa2 
      d2(0)=-2*[a2+b2/4+c2/9]/dxi/dxi
      d2(1)=a2/dxi/dxi;   d2(-1)=d2(1)
@@ -105,6 +106,8 @@ WITH derivy(1):    d01(-1)=1/4;  d01(0)=1;   d01(1)=1/4;       d1(-1)=-3/4/dxi; 
 WITH derivy(1):    d02(-1)=1/10; d02(0)=1;   d02(1)=1/10;      d2(-1)=6/5/dxi/dxi;  d2(0)=-12/5/dxi/dxi; d2(1)=6/5/dxi/dxi
 
 WITH derivy(2):    d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+WITH derivy(3):    d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+WITH derivy(ny-3): d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
 WITH derivy(ny-2): d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
 
 WITH derivy(ny-1): d01(-1)=1/4;  d01(0)=1;   d01(1)=1/4;       d1(-1)=-3/4/dxi;     d1(0)=0;             d1(1)=3/4/dxi
@@ -114,15 +117,15 @@ WITH derivy(ny):   d01(0)=1;     d01(-1)=2;  d1(0)=5/2/dxi;     d1(-1)=-4/2/dxi;
 WITH derivy(ny):   d02(0)=1;     d02(-1)=11; d2(0)=13/dxi/dxi;  d2(-1)=-27/dxi/dxi;  d2(-2)=15/dxi/dxi;  d2(-3)=-1/dxi/dxi
 LUdecomp derivy.d01; LUdecomp derivy.d02
 ! stretching functions 
-REAL beta = a/(ymax-ymin)
-REAL alfah = {-1 + SQRT[1+4*(beta**2)*PI**2]}/[2*beta]
+REAL beta = a
+REAL alfah = {-ly+SQRT[ly**2+4*(beta**2)*PI**2]}/[2*beta*ly]
 ARRAY(0..ny) OF REAL hp,one_hp,one_hp2,hpp_hp3,hpp
 DO 
-  REAL xi = i*dxi
-  hp(i)      = (ymax-ymin)*{PI*beta/[alfah*beta+SIN(PI*{gamma*xi+delta})**2]}  
-  one_hp(i)  = [alfah*beta+SIN(PI*{gamma*xi+delta})**2]/[PI*beta]/(ymax-ymin)
+  REAL xi = i*dxi/ly
+
+  one_hp(i)  = (1/ly*PI*beta/[alfah*beta +SIN(PI*(-xi+delta))**2])**(-1)
   one_hp2(i) = one_hp(i)**2
-  hpp_hp3(i) = {-2*gamma*SIN[PI*{gamma*xi+delta}]*COS[PI*{gamma*xi+delta}]/[(ymax-ymin)*beta]}*one_hp(i)
+  hpp_hp3(i) = [2 / ly**2 * PI**2 * beta * gamma * SIN(PI*(-xi+delta)) * COS(PI*(-xi+delta)) / (alfah*beta + SIN(PI*(-xi+delta))**2 )**2] * (one_hp(i)**3)
 FOR ALL i
 !DO WITH derivy(i): hpp(i) = [SUM d1(j)*hp((i+j)) FOR ALL j EXCEPT (i+j)<0 OR (i+j)>ny] FOR ALL i
 !hpp = derivy.d01\hpp
@@ -171,12 +174,12 @@ d2z(ztestf,ztestd2f)
 WRITE \n"z-derivative: tests"
 DO WRITE ztestdf(i), 2*PI/Lz*COS(2*PI*i*dz/Lz), ztestd2f(i), -(2*PI/Lz)**2*SIN(2*PI*i*dz/Lz) FOR ALL i
 !test-y
-ARRAY(0..ny) OF REAL testf=0,testdf=0,testd2f=0; DO testf(i)=y(i)**2 FOR i=0 TO ny
+ARRAY(0..ny) OF REAL testf=0,testdf=0,testd2f=0; DO testf(i)=y(i)**3 FOR i=0 TO ny
 d1y(testf,testdf); d2y(testf,testd2f)
 !ARRAY(0..nxd-1) OF REAL testf=0,testdf=0; DO testf(i)=SIN(2*PI*i/nxd) FOR ALL i
 !deriv(derivx.d2,derivx.d0,uuux,vvx,testf,testdf)
 WRITE \n"y-derivative: tests"
-DO WRITE testdf(i), 2*y(i), testd2f(i), 2 FOR i=0 TO ny
+DO WRITE y(i), testdf(i), 3*y(i)**2, testd2f(i), 6*y(i) FOR i=0 TO ny
 ! This will just stop the code execution, of course remove it when derivative tests are conluded
 STOP
 !)
