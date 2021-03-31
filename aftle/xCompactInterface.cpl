@@ -16,7 +16,7 @@
 ! momentum and vorticity. submitted (2020)
 ! 
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
 
 MODULE channelInterface
 
@@ -24,7 +24,11 @@ POINTER TO STORED STRUCTURE(
   ARRAY(0..2,0..nzd-1,0..ny,0..nxd-1) OF REAL fieldimage
   ) diskfield
 
-SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+SUBROUTINE read_field(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+  DEFAULTFORMAT 1.7
+
+  WRITE BY NAME field_id
+  STRING field_name = WRITE(path"/restart"field_id)
   IF has_terminal THEN WRITE "Reading velocity field:", field_name
   clock = wallclock()
   diskfield=OPEN(field_name)
@@ -177,9 +181,9 @@ DO WRITE testdf(i), 2*y(i), testd2f(i), 2 FOR i=0 TO ny
 STOP
 !)
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr)
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr)
   ! Load velocity field
-  read_field(field_name,Vr)
+  read_field(field_id,Vr)
   ! Compute active field
   ! XXX SHARED ARRAY(0..nx,-nz..nz,-1..ny+1) OF VELOCITY field=0
 #ifdef vorticity
