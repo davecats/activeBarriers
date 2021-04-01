@@ -63,7 +63,7 @@ REAL alfa0, beta0, a, ymin, ymax, ni, deltat, deltas, smax, Lx=0, Lz=0
 INTEGER nfmin, nfmax, dn_save
 STRING path
 SUBROUTINE read_initial_data
- FILE in_data=OPEN("ftle.in")
+ FILE in_data=OPEN("aftle.in")
  !READ BY NAME FROM in_data ny,nx,nz,ox,oy,oz,ofx,ofy,ofz,alfa0,beta0,ymin,ymax,a,ni, deltat, deltas, smax; ni=1/ni
  READ BY NAME FROM in_data ny
  DO WHILE READ BY NAME FROM in_data nx OR nxd; IF nxd=0 THEN nxd=3*nx DIV 2 - 1; DO INC nxd UNTIL FFTfit(nxd); nxd=2*~;END IF

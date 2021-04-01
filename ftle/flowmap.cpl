@@ -21,11 +21,9 @@ INTEGER iF = nfmin
 WRITE {[IF dir>0 THEN nfmax ELSE iF]-[IF dir>0 THEN iF ELSE nfmax]}
 LOOP WHILE {[IF dir>0 THEN nfmax ELSE iF]-[IF dir>0 THEN iF ELSE nfmax]}>0 
    IF iF=nfmin THEN
-      fieldname = WRITE(path"Field"iF".fld")
-      readVelocityField(fieldname, velocity(*,*,*,imod(iF)))
+      readVelocityField(iF, velocity(*,*,*,imod(iF)))
    END IF
-   STRING fieldname = WRITE(path"Field"iF+dir".fld")
-   readVelocityField(fieldname, velocity(*,*,*,imod(iF+dir)))
+   readVelocityField(iF+dir, velocity(*,*,*,imod(iF+dir)))
    chron=wallclock(); IF has_terminal THEN WRITE "Advances trajectories..."
    LOOP FOR it=1 TO ODE(1,*).LENGTH
      linearInterpolator(velocity(*,*,*,imod(iF)), velocity(*,*,*,imod(iF+dir)), velocity(*,*,*,2), it)

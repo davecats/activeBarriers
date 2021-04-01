@@ -222,7 +222,6 @@ SUBROUTINE save_flowmap(INTEGER nF)
   clock = wallclock(); IF has_terminal THEN WRITE "Saving flowmap: "filename
   FILE diskparticlesf=CREATE(filename)
   WRITE BINARY TO diskparticlesf particles
-  WRITE BINARY TO diskparticlesf extparticles
   CLOSE diskparticlesf 
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
 !(
@@ -242,7 +241,6 @@ SUBROUTINE load_flowmap(INTEGER nF)
   clock = wallclock(); IF has_terminal THEN WRITE "Saving flowmap: "filename
   FILE diskparticlesf=OPENRO(filename)
   READ BINARY FROM diskparticlesf particles
-  READ BINARY FROM diskparticlesf extparticles
   CLOSE diskparticlesf 
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
 !(

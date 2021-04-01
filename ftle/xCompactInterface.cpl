@@ -16,7 +16,7 @@
 ! momentum and vorticity. submitted (2020)
 ! 
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr) FOLLOWS
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL Vr) FOLLOWS
 
 MODULE channelInterface
 
@@ -24,7 +24,8 @@ POINTER TO STORED STRUCTURE(
   ARRAY(0..2,0..nzd-1,0..ny,0..nxd-1) OF REAL fieldimage
   ) diskfield
 
-SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+SUBROUTINE read_field(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+  STRING field_name=WRITE(path"/restart"field_id:1.7)
   IF has_terminal THEN WRITE "Reading velocity field:", field_name
   clock = wallclock()
   diskfield=OPEN(field_name)
@@ -37,9 +38,9 @@ SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL V)
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
 END read_field
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr)
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr)
   ! Load velocity field
-  read_field(field_name,Vr)
+  read_field(field_id,Vr)
 END readVelocityField
 
 END channelInterface

@@ -1,6 +1,6 @@
 ! this module should provide only an interaface to a subroutine that can read
 ! flow snapshots and return the velocity field in physical space 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr) FOLLOWS
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL Vr) FOLLOWS
 
 MODULE channelInterface
 
@@ -99,7 +99,8 @@ PARALLEL LOOP FOR ismp=0 TO nsmp-1
 REPEAT
 END vetaTOuvw
 
-SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF VELOCITY V)
+SUBROUTINE read_field(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF VELOCITY V)
+  STRING field_name=WRITE("Field"field_id".fld")
   IF has_terminal THEN WRITE "Reading velocity field:", field_name
   clock = wallclock()
   diskfield=OPEN(field_name)
@@ -116,10 +117,10 @@ SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF VELOCITY V)
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
 END read_field
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr)
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr)
   SHARED ARRAY(0..nx,-nz..nz,-1..ny+1) OF VELOCITY V
   ! Load velocity field
-  read_field(field_name,V)
+  read_field(field_id,V)
   ! Transform it to physical space
   clock = wallclock()
   IF has_terminal THEN WRITE "Converting the field to physical space"

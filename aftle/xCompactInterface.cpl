@@ -16,7 +16,7 @@
 ! momentum and vorticity. submitted (2020)
 ! 
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr) FOLLOWS
 
 MODULE channelInterface
 
@@ -24,7 +24,8 @@ POINTER TO STORED STRUCTURE(
   ARRAY(0..2,0..nzd-1,0..ny,0..nxd-1) OF REAL fieldimage
   ) diskfield
 
-SUBROUTINE read_field(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+SUBROUTINE read_field(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL V)
+  STRING field_name=WRITE(path"/restart"field_id:1.7) 
   IF has_terminal THEN WRITE "Reading velocity field:", field_name
   clock = wallclock()
   diskfield=OPEN(field_name)
@@ -81,7 +82,7 @@ derivz(0).d02(0)=~+1; derivz(0).d02(-1)=0; derivz(nzd-1).d02(0)=~+alfa2**2; deri
 LUdecomp derivz.d01; LUdecomp derivz.d02; uuz1=derivz.d01\uuz1; uuz2=derivz.d02\uuz2
 ! y-derivatives
 DO WITH derivy(iy): 
-   IF iy>2 AND iy<ny-2 THEN 
+   IF iy>3 AND iy<ny-3 THEN 
      d02(-1)=alfa2; d02(0)=1; d02(1)=alfa2 
      d2(0)=-2*[a2+b2/4+c2/9]/dxi/dxi
      d2(1)=a2/dxi/dxi;   d2(-1)=d2(1)
@@ -101,6 +102,11 @@ WITH derivy(1):    d01(-1)=1/4;  d01(0)=1;   d01(1)=1/4;       d1(-1)=-3/4/dxi; 
 WITH derivy(1):    d02(-1)=1/10; d02(0)=1;   d02(1)=1/10;      d2(-1)=6/5/dxi/dxi;  d2(0)=-12/5/dxi/dxi; d2(1)=6/5/dxi/dxi
 
 WITH derivy(2):    d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+
+WITH derivy(3):    d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+
+WITH derivy(ny-3): d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
+
 WITH derivy(ny-2): d02(-1)=2/11; d02(0)=1;   d02(1)=2/11;      d2(1)=12/11/dxi/dxi;  d2(-1)=d2(1); d2(2)=3/44/dxi/dxi; d2(-2)=d2(2); d2(0)=-2*[d2(2)+d2(1)]
 
 WITH derivy(ny-1): d01(-1)=1/4;  d01(0)=1;   d01(1)=1/4;       d1(-1)=-3/4/dxi;     d1(0)=0;             d1(1)=3/4/dxi
@@ -167,32 +173,47 @@ d2z(ztestf,ztestd2f)
 WRITE \n"z-derivative: tests"
 DO WRITE ztestdf(i), 2*PI/Lz*COS(2*PI*i*dz/Lz), ztestd2f(i), -(2*PI/Lz)**2*SIN(2*PI*i*dz/Lz) FOR ALL i
 !test-y
-ARRAY(0..ny) OF REAL testf=0,testdf=0,testd2f=0; DO testf(i)=y(i)**2 FOR i=0 TO ny
+ARRAY(0..ny) OF REAL testf=0,testdf=0,testd2f=0; DO testf(i)=y(i)**3 FOR i=0 TO ny
 d1y(testf,testdf); d2y(testf,testd2f)
 !ARRAY(0..nxd-1) OF REAL testf=0,testdf=0; DO testf(i)=SIN(2*PI*i/nxd) FOR ALL i
 !deriv(derivx.d2,derivx.d0,uuux,vvx,testf,testdf)
 WRITE \n"y-derivative: tests"
-DO WRITE testdf(i), 2*y(i), testd2f(i), 2 FOR i=0 TO ny
+DO WRITE testdf(i), 3*y(i)**2, testdf(i)-3*y(i)**2, testd2f(i), 6*y(i), testd2f(i)-6*y(i) FOR i=0 TO ny
 ! This will just stop the code execution, of course remove it when derivative tests are conluded
 STOP
 !)
 
-SUBROUTINE readVelocityField(STRING field_name; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr)
+SUBROUTINE readVelocityField(INTEGER field_id; POINTER TO ARRAY(*,*,*) OF REALVEL  Vr; POINTER TO ARRAY(*,*,*) OF REALAVF  AVFr)
   ! Load velocity field
-  read_field(field_name,Vr)
+  read_field(field_id,Vr)
   ! Compute active field
-  ! XXX SHARED ARRAY(0..nx,-nz..nz,-1..ny+1) OF VELOCITY field=0
+  SHARED ARRAY(0..nxd-1, 0..nzd-1, -1..ny+1) OF REALVEL field=0
 #ifdef vorticity
   IF has_terminal THEN WRITE "Computing vorticity..."
   clock = wallclock()
   ! XXX TODO field <-- omega
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
+  ERROR "Omega has not been implemented yet" !XXX TODO
 #else 
-  field=V
+  field=Vr
 #endif
   IF has_terminal THEN WRITE "Computing active vector field..."
   clock = wallclock()
-  ! XXX TODO field <-- lapl(field)
+  PARALLEL LOOP FOR ismp=0 TO nsmp-1
+    DO 
+      ARRAY(0..nxd-1) OF REAL dummy
+      d2x(field(*,iz,iy,i),dummy); AVFr(*,iz,iy,i)=dummy(*) 
+    FOR iz=ismp*(HI+1) DIV nsmp TO (ismp+1)*(HI+1) DIV nsmp -1 AND ALL iy,i
+    SYNC(ismp,nsmp)
+    DO 
+      ARRAY(0..nzd-1) OF REAL dummy
+      d2z(field(ix,*,iy,i),dummy); AVFr(ix,*,iy,i)=~+dummy(*)
+    FOR ix=ismp*(HI+1) DIV nsmp TO (ismp+1)*(HI+1) DIV nsmp -1  AND ALL iy,i
+    DO 
+      ARRAY(0..ny) OF REAL dummy
+      d2y(field(ix,iz,0..ny,i),dummy(0..ny)); AVFr(ix,iz,0..ny,i)=~+dummy(0..ny)
+    FOR ix=ismp*(HI+1) DIV nsmp TO (ismp+1)*(HI+1) DIV nsmp -1  AND ALL iz,i
+  REPEAT
   IF has_terminal THEN WRITE " ","took "-clock+wallclock() " seconds"
 END readVelocityField
 
